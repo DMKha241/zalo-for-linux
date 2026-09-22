@@ -6,16 +6,21 @@ const fs = require('fs');
 // Paths
 // ---------------------------------------------------------------------------
 
-const appDir = fs.existsSync(path.join(__dirname, 'app'))
-  ? path.join(__dirname, 'app')
-  : path.join(path.dirname(process.execPath), 'app');
+const candidates = [
+  path.join(__dirname, 'app'),
+  path.join(path.dirname(process.execPath), 'app'),
+  path.join(process.resourcesPath, 'app'),
+  __dirname
+];
+        
+const appDir = candidates.find((dir) => fs.existsSync(dir)) || __dirname;
 
 const iconPath = path.join(appDir, 'pc-dist', 'favicon-512x512.png');
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-app.setName('zalo');
+app.setName('Zalo');
 let tray = null;
 let mainWindow = null;
 let isAppQuitting = false;
@@ -24,7 +29,6 @@ let isAppQuitting = false;
 // Plugins
 // ---------------------------------------------------------------------------
 
-const zaluxPlugin = require('./plugins/zalux');
 const screenshotPlugin = require('./plugins/screenshot');
 const launcherBadgePlugin = require('./plugins/launcher-badge');
 const userscriptsPlugin = require('./plugins/userscripts');
@@ -175,7 +179,6 @@ app.once('ready', () => {
 
 // Register plugins
   launcherBadgePlugin.register({ app, ipcMain });
-  zaluxPlugin.register({ app, ipcMain, BrowserWindow, appDir });
   screenshotPlugin.register({ ipcMain });
   userscriptsPlugin.register({ app, ipcMain, BrowserWindow });
   zcallBridgePlugin.launch({ userDataDir: app.getPath('userData') });
@@ -186,12 +189,24 @@ app.once('ready', () => {
 // ---------------------------------------------------------------------------
 
 function bootstrap() {
-  const bootstrapPath = path.join(appDir, 'bootstrap.js');
+  let bootstrapPath = path.join(appDir, 'bootstrap.js');
+  if (!fs.existsSync(bootstrapPath)) {
+    bootstrapPath = path.join(__dirname, 'bootstrap.js');
+  }
+
   if (!fs.existsSync(bootstrapPath)) {
     console.error('Zalo bootstrap.js not found at:', bootstrapPath);
     return;
   }
-  process.chdir(appDir);
+
+  try {
+    const targetDir = appDir.includes('.asar')
+    ? path.dirname(app.getAppPath())
+    : appDir;
+    process.chdir(targetDir);
+  } catch (e) {
+    console.warn('Could not chdir to target directory:', e);
+  }
   try {
     require(bootstrapPath);
   } catch (e) {

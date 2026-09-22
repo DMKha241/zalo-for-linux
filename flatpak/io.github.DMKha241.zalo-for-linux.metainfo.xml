@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 DMKha -->
+<component type="desktop-application">
+    <id>io.github.DMKha241.zalo-for-linux</id>
+    <metadata_license>CC0-1.0</metadata_license>
+    <project_license>MIT</project_license>
+    <name>Zalo for Linux</name>
+    <summary>Zalo for Linux</summary>
+    <developer id="io.github">
+        <name>DMKha241</name>
+    </developer>
+    <description>
+        <p>Unofficial port of Zalo messaging application for Linux systems.</p>
+    </description>
+    <launchable type="desktop-id">io.github.DMKha241.zalo-for-linux.desktop</launchable>
+    <categories>
+        <category>Network</category>
+    </categories>
+    <icon type="stock">io.github.DMKha241.zalo-for-linux</icon>
+    <url type="bugtracker">https://github.com/DMKha241/zalo-for-linux/issues</url>
+    <url type="vcs-browser">https://github.com/DMKha241/zalo-for-linux</url>
+    <keywords>
+        <keyword>zalo</keyword>
+        <keyword>chat</keyword>
+        <keyword>messaging</keyword>
+        <keyword>linux</keyword>
+    </keywords>
+    <requires>
+        <control>keyboard</control>
+        <control>pointing</control>
+    </requires>
+    <releases>
+        <release version="26.9.10" date="2026-09-22">
+            <description>
+                <p>Update to 26.9.10</p>
+            </description>
+        </release>
+        <release version="26.8.20" date="2026-09-01">
+            <description>
+                <p>Update to 26.8.20</p>
+            </description>
+        </release>
+        <release version="26.8.10" date="2026-08-15">
+            <description>
+                <p>Update to 26.8.10</p>
+            </description>
+        </release>
+        <release version="26.7.10" date="2026-07-31">
+            <description>
+                <p>Update to 26.7.10</p>
+            </description>
+        </release>
+        <release version="1.0.0" date="2026-07-31">
+            <description>
+                <p>Update to 1.0.0</p>
+            </description>
+        </release>
+    </releases>
+</component>

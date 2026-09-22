@@ -34,27 +34,13 @@ async function main() {
     logger.step('PHASE 1: Building Zalo (Original)');
     await build('(Original)', '');
 
-    // Phase 1.5: Full variant of the original (no ZaDark) — wine bundled.
-    logger.step('PHASE 1.5: Building Zalo (Full — wine bundled, no ZaDark)');
+    // Phase 2: Full variant of the original (no ZaDark) — wine bundled.
+    logger.step('PHASE 2: Building Zalo (wine bundled)');
     await bundleWineRuntime();
-    await build('(Full — wine bundled)', '-PlainFull');
+    await build('(wine bundled)', '-wine');
     // Remove the runtime again — the standard variants must not contain it,
     // and a leftover from a previous run would silently bloat them (and the
     // next Full build) to the Full size.
-    fs.rmSync(path.join(APP_DIR, 'native', 'wine-runtime'), { recursive: true, force: true });
-
-    // Phase 2: Apply ZaDark integration and build final product
-    logger.step('PHASE 2: Building Zalo (with ZaDark)');
-
-    // Patch ZaDark directly into APP_DIR
-    await integrateZaDark();
-    await build('(with ZaDark)', '-ZaDark');
-
-    // Phase 3: Full variant of the ZaDark build — wine bundled, so the call
-    // feature works out of the box with no first-run download.
-    logger.step('PHASE 3: Building Zalo (Full — wine bundled, with ZaDark)');
-    await bundleWineRuntime();
-    await build('(Full — wine bundled)', '-Full');
     fs.rmSync(path.join(APP_DIR, 'native', 'wine-runtime'), { recursive: true, force: true });
 
     // Final summary
@@ -64,7 +50,7 @@ async function main() {
         logger.info(`${type} • ${name} (${sizeStr})`);
       });
     } else {
-      logger.warn('No AppImage files were built in this run');
+      logger.warn('No Flatpak files were built in this run');
     }
   } catch (error) {
     logger.error('Main workflow failed:', error.message);
@@ -101,59 +87,15 @@ async function bundleWineRuntime() {
   logger.success('wine runtime bundled into app/native/wine-runtime');
 }
 
-async function integrateZaDark() {
-  logger.info('Applying ZaDark patches...');
-
-  try {
-    // Verify ZaDark module is available
-    const zadarkModulePath = path.join(BASE_DIR, 'plugins', 'zadark', 'build', 'pc', 'zadark-pc.js');
-    if (!fs.existsSync(zadarkModulePath)) {
-      throw new Error('ZaDark PC module not found - run "npm run prepare-zadark" first');
-    }
-
-    const zadarkPC = require(zadarkModulePath);
-    zadarkPC.copyZaDarkAssets(BASE_DIR);
-    zadarkPC.writeIndexFile(BASE_DIR);
-    zadarkPC.writeBootstrapFile(BASE_DIR);
-    zadarkPC.writePopupViewerFile(BASE_DIR);
-    logger.success('ZaDark patches applied successfully');
-
-  } catch (error) {
-    logger.error('ZaDark integration failed:', error.message);
-    logger.info('Continuing with original app directory...');
-  }
-}
-
 async function build(buildName = '', outputSuffix = '') {
   try {
-    // Get git commit hash for filename
-    const commitHash = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
 
     // Set artifact name and build command based on build type
     let artifactName;
     let buildCommand;
-    let zadarkVersion = null;
 
-    if (outputSuffix === '-ZaDark' || outputSuffix === '-Full') {
-      // Read ZaDark version for custom naming (the Full variant also builds
-      // on the ZaDark-integrated app directory)
-      const zadarkPackagePath = path.join(BASE_DIR, 'plugins', 'zadark', 'package.json');
-      zadarkVersion = 'unknown';
-
-      if (fs.existsSync(zadarkPackagePath)) {
-        try {
-          const zadarkPackage = JSON.parse(fs.readFileSync(zadarkPackagePath, 'utf8'));
-          zadarkVersion = zadarkPackage.version;
-        } catch (error) {
-          logger.warn('Could not read ZaDark version, using "unknown"');
-        }
-      }
-
-      artifactName = `Zalo-${ZALO_VERSION}+ZaDark-${zadarkVersion}-${commitHash}${outputSuffix}.AppImage`;
-      buildCommand = `npx electron-builder --linux --config.linux.artifactName="${artifactName}" -c.extraMetadata.version=${ZALO_VERSION} --publish=never`;
-      logger.info(`Building ${buildName} with Zalo: ${ZALO_VERSION}, ZaDark: ${zadarkVersion}, Commit: ${commitHash}`);
-    } else if (outputSuffix === '-PlainFull') {
-      artifactName = `Zalo-${ZALO_VERSION}-${commitHash}-Full.AppImage`;
+    if (outputSuffix === '-wine') {
+      artifactName = `Zalo-${ZALO_VERSION}-${commitHash}-wine.AppImage`;
       buildCommand = `npx electron-builder --linux --config.linux.artifactName="${artifactName}" -c.extraMetadata.version=${ZALO_VERSION} --publish=never`;
       logger.info(`Building ${buildName} with Zalo: ${ZALO_VERSION}, Commit: ${commitHash}`);
     } else {
@@ -164,7 +106,6 @@ async function build(buildName = '', outputSuffix = '') {
     // Write build-info.json to the app directory so the AppImage will contain its metadata
     const buildInfo = {
       version: ZALO_VERSION,
-      zadarkVersion: (outputSuffix === '-ZaDark' || outputSuffix === '-Full') ? zadarkVersion : null,
       commit: commitHash,
       buildDate: new Date().toISOString()
     };
@@ -216,7 +157,7 @@ async function build(buildName = '', outputSuffix = '') {
         logger.dim(`SHA256: ${fileSha256}`);
         
         builtFiles.push({
-          type: outputSuffix === '-Full' ? '🍷 Full (ZaDark)' : outputSuffix === '-PlainFull' ? '🍷 Full' : outputSuffix === '-ZaDark' ? '🎨 ZaDark' : '📦 Original',
+          type: outputSuffix === '-wine' ? '🍷 Wine' : '📦 Original',
           name: appImageName,
           sizeStr
         });
@@ -229,7 +170,7 @@ async function build(buildName = '', outputSuffix = '') {
 
     // Export build info to GitHub Actions
     if (process.env.GITHUB_OUTPUT) {
-      const prefix = outputSuffix === '-PlainFull' ? 'plainfull_' : outputSuffix === '-Full' ? 'full_' : outputSuffix === '-ZaDark' ? 'zadark_' : 'original_';
+      const prefix = outputSuffix === '-wine' ? 'wine_' : 'original_';
 
       // Export build-specific info
       const specificOutputs = [

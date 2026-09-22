@@ -1,4 +1,0 @@
-[submodule "plugins/zadark"]
-	path = plugins/zadark
-	url = https://github.com/quaric/zadark.git
-	ignore = all

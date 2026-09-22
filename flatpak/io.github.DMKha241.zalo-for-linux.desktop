@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Zalo
+Comment=Unofficial port of Zalo messaging application for Linux systems.
+Icon=io.github.DMKha241.zalo-for-linux
+Exec=env DESKTOPINTEGRATION=1 zalo %U
+Terminal=false
+Categories=Network;
+StartupWMClass=Zalo
+

@@ -4,16 +4,12 @@ const path = require('path');
 const https = require('https');
 const logger = require('./utils/logger');
 
-const ZADARK_DIR = path.join(__dirname, '..', 'plugins', 'zadark');
-
 async function main() {
   try {
     // Get all required versions
     const targetZaloVersion = process.env.ZALO_VERSION || await getLatestZaloVersion();
-    const targetZaDarkVersion = process.env.ZADARK_VERSION || await getLatestZaDarkVersion();
 
     process.env.ZALO_VERSION = targetZaloVersion;
-    process.env.ZADARK_VERSION = targetZaDarkVersion;
 
     // Only check combinations in GitHub Actions
     if (process.env.GITHUB_ACTIONS) {
@@ -29,7 +25,7 @@ async function main() {
       logger.info(`Found ${existingCombo.length} existing combinations in releases`);
 
       // Check if combination already exists
-      const targetCombo = `${targetZaloVersion}+${targetZaDarkVersion}+${targetCommit}`;
+      const targetCombo = `${targetZaloVersion}+${targetCommit}`;
       const isExist = existingCombo.includes(targetCombo);
 
       if (isExist) {
@@ -44,7 +40,6 @@ async function main() {
 
     // Output for CI/scripts
     logger.dim(`ZALO_VERSION=${process.env.ZALO_VERSION}`);
-    logger.dim(`ZADARK_VERSION=${process.env.ZADARK_VERSION}`);
     if (process.env.BUILD) logger.dim(`BUILD=${process.env.BUILD}`);
   } catch (error) {
     logger.error('Version check failed:', error.message);
@@ -81,37 +76,6 @@ async function getLatestZaloVersion() {
       request.destroy();
       reject(new Error('Request timeout'));
     });
-  });
-}
-
-async function getLatestZaDarkVersion() {
-  return new Promise((resolve, reject) => {
-    try {
-      // First ensure submodule is initialized and updated
-      execSync('git submodule update --init --recursive --remote', {
-        stdio: 'pipe'
-      });
-
-      execSync('git fetch --tags', {
-        cwd: ZADARK_DIR,
-        stdio: 'pipe'
-      });
-
-      // Get latest tag from submodule
-      const latestTag = execSync('git tag --sort=-version:refname | head -1', {
-        cwd: ZADARK_DIR,
-        encoding: 'utf8',
-        stdio: 'pipe'
-      }).trim();
-
-      if (latestTag) {
-        resolve(latestTag);
-      } else {
-        reject(new Error('No ZaDark tags found'));
-      }
-    } catch (error) {
-      reject(new Error(`Could not get ZaDark version: ${error.message}`));
-    }
   });
 }
 

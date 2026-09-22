@@ -1,9 +1,10 @@
 {
   "name": "zalo-for-linux",
   "version": "1.0.0",
-  "description": "Unofficial Zalo port for Linux with ZaDark integration",
+  "description": "Unofficial Zalo port for Linux",
   "main": "main.js",
   "scripts": {
+    "postinstall": "electron-rebuild",
     "start": "electron .",
     "check-versions": "node scripts/check-versions.js",
     "download-dmg": "node scripts/download-dmg.js",
@@ -16,30 +17,30 @@
   },
   "keywords": [
     "zalo",
-    "zadark",
     "chat",
     "messaging",
     "linux"
   ],
-  "author": "doandat943",
+  "author": "DMKha",
   "license": "MIT",
-  "homepage": "https://github.com/doandat943/zalo-for-linux",
+  "homepage": "https://github.com/DMKha241/zalo-for-linux.git",
   "repository": {
     "type": "git",
-    "url": "https://github.com/doandat943/zalo-for-linux.git"
+    "url": "https://github.com/DMKha241/zalo-for-linux.git"
   },
   "bugs": {
-    "url": "https://github.com/doandat943/zalo-for-linux/issues"
+    "url": "https://github.com/DMKha241/zalo-for-linux/issues"
   },
   "devDependencies": {
     "@electron/asar": "^4.0.1",
+    "@electron/rebuild": "^4.2.0",
     "electron": "^22.3.27",
     "electron-builder": "^26.0.12",
     "node-html-parser": "^7.0.1",
     "sqlite3": "^6.0.1"
   },
   "build": {
-    "appId": "com.zalo.linux",
+    "appId": "io.github.DMKha241.zalo-for-linux",
     "productName": "Zalo",
     "directories": {
       "output": "dist"
@@ -48,12 +49,10 @@
       "main.js",
       "package.json",
       "plugins/**/*",
-      "assets/**/*"
-    ],
-    "extraFiles": [
+      "assets/**/*",
       {
         "from": "app",
-        "to": "app",
+        "to": ".",
         "filter": [
           "**/*",
           "!node_modules",
@@ -65,19 +64,23 @@
         "to": "zcall-bridge"
       }
     ],
+    "extraFiles": [],
     "asarUnpack": [
-      "**/*.node"
+      "**/nativelibs/**/*"
     ],
     "buildDependenciesFromSource": false,
     "nodeGypRebuild": false,
     "npmRebuild": false,
     "linux": {
       "executableName": "zalo",
-      "target": "AppImage",
+      "target": [
+        "flatpak",
+        "AppImage"
+      ],
       "category": "Network",
       "desktop": {
         "entry": {
-          "StartupWMClass": "zalo"
+          "StartupWMClass": "Zalo"
         }
       },
       "synopsis": "Zalo messaging app for Linux",
