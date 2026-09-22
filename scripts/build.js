@@ -90,6 +90,8 @@ async function bundleWineRuntime() {
 async function build(buildName = '', outputSuffix = '') {
   try {
 
+    const commitHash = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); // Get git commit hash for filename
+
     // Set artifact name and build command based on build type
     let artifactName;
     let buildCommand;
