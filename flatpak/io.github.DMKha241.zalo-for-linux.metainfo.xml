@@ -30,6 +30,11 @@
         <control>pointing</control>
     </requires>
     <releases>
+        <release version="26.9.10" date="2026-09-22">
+            <description>
+                <p>Update to 26.9.10</p>
+            </description>
+        </release>
         <release version="26.8.20" date="2026-09-01">
             <description>
                 <p>Update to 26.8.20</p>
