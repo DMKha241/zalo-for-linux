@@ -32,6 +32,7 @@ let isAppQuitting = false;
 const screenshotPlugin = require('./plugins/screenshot');
 const launcherBadgePlugin = require('./plugins/launcher-badge');
 const userscriptsPlugin = require('./plugins/userscripts');
+const zcallBridgePlugin = require('./plugins/zcall-bridge');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,6 +72,7 @@ function showMainWindow() {
 
 app.on('before-quit', () => {
   isAppQuitting = true;
+  zcallBridgePlugin.shutdown();
   if (tray) {
     tray.destroy();
     tray = null;
@@ -115,6 +117,12 @@ app.on('browser-window-created', (_evt, win) => {
           {
             label: 'Toggle DevTools',
             click: toggleDevTools
+          },
+          {
+            label: 'Cài đặt gọi điện…',
+            click: () => {
+              zcallBridgePlugin.openSetupDialog({ userDataDir: app.getPath('userData') });
+            }
           },
           {
             label: 'Thoát',
@@ -173,6 +181,7 @@ app.once('ready', () => {
   launcherBadgePlugin.register({ app, ipcMain });
   screenshotPlugin.register({ ipcMain });
   userscriptsPlugin.register({ app, ipcMain, BrowserWindow });
+  zcallBridgePlugin.launch({ userDataDir: app.getPath('userData') });
 });
 
 // ---------------------------------------------------------------------------

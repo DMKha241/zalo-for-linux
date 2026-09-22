@@ -58,6 +58,10 @@
           "!node_modules",
           "!package-lock.json"
         ]
+      },
+      {
+        "from": "zcall-bridge",
+        "to": "zcall-bridge"
       }
     ],
     "extraFiles": [],
@@ -83,5 +87,8 @@
       "description": "Unofficial port of Zalo messaging application for Linux systems.",
       "icon": "app/pc-dist/favicon-512x512.png"
     }
+  },
+  "dependencies": {
+    "fs-extra": "^11.4.0"
   }
 }

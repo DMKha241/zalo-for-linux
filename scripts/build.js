@@ -26,9 +26,22 @@ async function main() {
       logger.warn('package.json.bak not found, version will be unknown');
     }
 
-    // Build original Zalo
+    // A leftover bundled runtime (e.g. from a crashed previous run) would
+    // silently bloat the standard variants — start clean; Phase 3 re-bundles.
+    fs.rmSync(path.join(APP_DIR, 'native', 'wine-runtime'), { recursive: true, force: true });
+
+    // Phase 1: Build original Zalo
     logger.step('PHASE 1: Building Zalo (Original)');
     await build('(Original)', '');
+
+    // Phase 2: Full variant of the original (no ZaDark) — wine bundled.
+    logger.step('PHASE 2: Building Zalo (wine bundled)');
+    await bundleWineRuntime();
+    await build('(wine bundled)', '-wine');
+    // Remove the runtime again — the standard variants must not contain it,
+    // and a leftover from a previous run would silently bloat them (and the
+    // next Full build) to the Full size.
+    fs.rmSync(path.join(APP_DIR, 'native', 'wine-runtime'), { recursive: true, force: true });
 
     // Final summary
     logger.step('BUILD SUMMARY');
@@ -45,6 +58,35 @@ async function main() {
   }
 }
 
+// Keep in sync with WINE_DOWNLOAD_URL in plugins/zcall-bridge/index.js
+const WINE_DOWNLOAD_URL =
+  'https://github.com/Kron4ek/Wine-Builds/releases/download/11.14/wine-11.14-amd64.tar.xz';
+
+async function bundleWineRuntime() {
+  const target = path.join(APP_DIR, 'native', 'wine-runtime');
+  if (fs.existsSync(path.join(target, 'bin', 'wine'))) {
+    logger.dim('wine runtime already bundled, skipping download');
+    return;
+  }
+  const tarball = path.join(APP_DIR, 'native', 'wine-bundle.tar.xz');
+  logger.info('Downloading portable wine for the Full variant...');
+  try {
+    execSync(`curl -L --fail -o "${tarball}" "${WINE_DOWNLOAD_URL}"`, {
+      cwd: BASE_DIR, stdio: 'inherit'
+    });
+    fs.mkdirSync(target, { recursive: true });
+    execSync(`tar -xf "${tarball}" -C "${target}" --strip-components=1`, {
+      cwd: BASE_DIR, stdio: 'pipe'
+    });
+  } finally {
+    try { fs.unlinkSync(tarball); } catch (e) { /* none */ }
+  }
+  if (!fs.existsSync(path.join(target, 'bin', 'wine'))) {
+    throw new Error('wine binary not found after extract');
+  }
+  logger.success('wine runtime bundled into app/native/wine-runtime');
+}
+
 async function build(buildName = '', outputSuffix = '') {
   try {
 
@@ -52,13 +94,19 @@ async function build(buildName = '', outputSuffix = '') {
     let artifactName;
     let buildCommand;
 
-    artifactName = `Zalo-${ZALO_VERSION}.AppImage`;
-    buildCommand = `npx electron-builder --linux AppImage --config.linux.artifactName="${artifactName}" -c.extraMetadata.version=${ZALO_VERSION} --publish=never`;
-    logger.info(`Building ${buildName} with Zalo: ${ZALO_VERSION}`);
-
+    if (outputSuffix === '-wine') {
+      artifactName = `Zalo-${ZALO_VERSION}-${commitHash}-wine.AppImage`;
+      buildCommand = `npx electron-builder --linux --config.linux.artifactName="${artifactName}" -c.extraMetadata.version=${ZALO_VERSION} --publish=never`;
+      logger.info(`Building ${buildName} with Zalo: ${ZALO_VERSION}, Commit: ${commitHash}`);
+    } else {
+      artifactName = `Zalo-${ZALO_VERSION}-${commitHash}.AppImage`;
+      buildCommand = `npx electron-builder --linux --config.linux.artifactName="${artifactName}" -c.extraMetadata.version=${ZALO_VERSION} --publish=never`;
+      logger.info(`Building ${buildName} with Zalo: ${ZALO_VERSION}, Commit: ${commitHash}`);
+    }
     // Write build-info.json to the app directory so the AppImage will contain its metadata
     const buildInfo = {
       version: ZALO_VERSION,
+      commit: commitHash,
       buildDate: new Date().toISOString()
     };
     
@@ -109,7 +157,7 @@ async function build(buildName = '', outputSuffix = '') {
         logger.dim(`SHA256: ${fileSha256}`);
         
         builtFiles.push({
-          type: outputSuffix === '-ZaDark' ? '🎨 ZaDark' : '📦 Original',
+          type: outputSuffix === '-wine' ? '🍷 Wine' : '📦 Original',
           name: appImageName,
           sizeStr
         });
@@ -122,7 +170,7 @@ async function build(buildName = '', outputSuffix = '') {
 
     // Export build info to GitHub Actions
     if (process.env.GITHUB_OUTPUT) {
-      const prefix = outputSuffix === '-ZaDark' ? 'zadark_' : 'original_';
+      const prefix = outputSuffix === '-wine' ? 'wine_' : 'original_';
 
       // Export build-specific info
       const specificOutputs = [
