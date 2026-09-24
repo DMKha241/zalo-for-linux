@@ -7,13 +7,15 @@ VER="${1:-unknown}"
 OUTNAME="${2:?Error: No OUTNAME given}"
 DIST_DIR="${3:?Error: No DIST_DIR given}"
 
+export ZADARK_SUFFIX=$( [[ "${OUTNAME}" == *ZaDark* ]] && echo "+ZaDark-[0-9]*[0-9]" || echo "" )
+export VARIANT_SUFFIX=$( [[ "${OUTNAME}" == *-Full* ]] && echo "-Full" || echo "" )
 export ARCH="$(uname -m)"
 export APP_NAME="Zalo"
 export DESKTOP="zalo.desktop"
 export ICON="zalo.png"
 export STARTUPWMCLASS="zalo"
 export OUTPATH="${DIST_DIR}"
-export UPINFO="gh-releases-zsync|doandat943|zalo-for-linux|latest|${OUTNAME}.zsync"
+export UPINFO="gh-releases-zsync|VN-Linux-Family|zalo-for-linux|latest|Zalo-[0-9]*[0-9]${ZADARK_SUFFIX}-???????${VARIANT_SUFFIX}-${ARCH}.AppImage.zsync"
 export VERSION="$VER"
 
 APPDIR="${DIST_DIR}/squashfs-root"
