@@ -113,6 +113,7 @@ class EngineCore {
       media.on('roster', (uids) => this._groupRoster(uids));
       media.on('memberLeft', (uid) => this._groupMemberLeft(uid, 'server'));
       media.on('memberAudio', (uid) => this._groupMemberIn(uid));
+      media.on('memberSpeaking', (uid, on) => { if (this.call && this.call.group && typeof this.ui.speaking === 'function') this.ui.speaking(uid, on); });
       media.on('video', (pkt) => this._onVideoPacket(pkt));
       media.on('keyframe', (why) => this._requestKeyFrame(why));
       // The rung our camera is encoded at (send-rate.js): the 1-1 ladder, or a
@@ -703,7 +704,7 @@ class EngineCore {
     const who = Number(d.userId || d.fromId) || 0;
     switch (act) {
       case 'group_broadcast': // member state, sent every few seconds
-        if (who && who !== c.localUid) this._groupMember(who, { state: Number(d.callState) === 3 ? 'incall' : 'ringing', muted: Number(d.audioState) === 1 });
+        if (who && who !== c.localUid) this._groupMember(who, { state: Number(d.callState) === 3 ? 'incall' : 'ringing', muted: Number(d.audioState) === 1, camOff: Number(d.videoState) === 1 });
         return;
       case 'group_answer':
         if (who && who !== c.localUid) { this._groupMember(who, { state: 'incall' }); this._groupGreet(who); }
@@ -761,6 +762,9 @@ class EngineCore {
       maxUsers: Number(g.maxUsers) || 8,
       invited: ids,
       inviteNames: (data.partner || []).map((p) => p.name || ''),
+      // Name / avatar of the invited (Zalo ids, not UIDs): only a single invitee can be told
+      // apart when its UID shows up (_groupMember).
+      invitePartners: (data.partner || []).map((p) => ({ name: p.name || '', avatar: p.avatar || '' })),
       members: new Map(),
       pingMs: 9000,
       startedAt: 0,
@@ -883,7 +887,8 @@ class EngineCore {
     for (const p of Array.isArray(d.partnerInfo) ? d.partnerInfo : []) {
       const uid = Number(p.userId) || 0;
       if (!uid || uid === localUid) continue;
-      members.set(uid, { name: p.name || '', state: Number(p.callState) === 3 ? 'incall' : 'ringing', muted: Number(p.audioState) === 1 });
+      members.set(uid, { name: p.name || '', avatar: p.avatar || '', state: Number(p.callState) === 3 ? 'incall' : 'ringing',
+        muted: Number(p.audioState) === 1, camOff: Number(p.videoState) === 1 });
     }
     const interval = Number(d.interval) || 0;
     this.call = {
@@ -1038,9 +1043,26 @@ class EngineCore {
     const c = this.call;
     if (!c || !c.group || uid === c.localUid) return;
     const m = c.members.get(uid) || { name: '' };
-    c.members.set(uid, { ...m, ...info });
+    const next = { ...m, ...info };
+    if (!next.name && c.invitePartners && c.invitePartners.length === 1) Object.assign(next, c.invitePartners[0]);
+    c.members.set(uid, next);
     if (info.state === 'incall') c.answered = true;
     this._groupStatus();
+  }
+
+  // The window's tiles: every member in the call or being rung, with name, avatar,
+  // micro and camera state (macOS PartnerUI: label + mic icon, avatar when the camera
+  // is off). Sent when it changes.
+  _groupMembersToUi() {
+    const c = this.call;
+    if (!c || !c.group || typeof this.ui.members !== 'function') return;
+    const list = [...c.members.entries()]
+      .filter(([, m]) => m.state === 'incall' || m.state === 'ringing')
+      .map(([uid, m]) => ({ src: uid, name: m.name || '', avatar: m.avatar || '', muted: !!m.muted, camOff: !!m.camOff, state: m.state }));
+    const key = JSON.stringify(list);
+    if (key === c.membersKey) return;
+    c.membersKey = key;
+    this.ui.members(list);
   }
 
   _groupMemberIn(uid) {
@@ -1085,6 +1107,7 @@ class EngineCore {
   _groupStatus() {
     const c = this.call;
     if (!c || !c.group || c.state !== 'connected') return;
+    this._groupMembersToUi();
     const names = [...c.members.values()].filter((m) => m.state === 'incall').map((m) => m.name || 'Thành viên');
     const waiting = c.role === 'caller' && !c.answered ? 'Đang đổ chuông…' : 'Đang chờ người khác…';
     const text = names.length ? `${names.length + 1} người: Bạn, ${names.join(', ')}` : waiting;
