@@ -110,6 +110,7 @@ class EngineCore {
       media.on('timeout', () => this.hangup('media-timeout'));
       media.on('failed', (why) => this.hangup(`media-${why}`));
       media.on('peerEnd', (why) => (this.call && this.call.group ? this._groupEnded(why || 'server') : this._peerEnded('server')));
+      media.on('audioFault', (kind) => this._audioFault(kind));
       media.on('roster', (uids) => this._groupRoster(uids));
       media.on('memberLeft', (uid) => this._groupMemberLeft(uid, 'server'));
       media.on('memberAudio', (uid) => this._groupMemberIn(uid));
@@ -535,6 +536,24 @@ class EngineCore {
   }
 
   // The other side hung up, cancelled or declined.
+  // The microphone, the speaker or all of audio-io stopped during the call (no
+  // sound server, a device gone). The call goes on (the other side may still
+  // hear us, or we them), and the window says what is wrong, once per device.
+  _audioFault(kind) {
+    const c = this.call;
+    if (!c || c.state === 'ended') return;
+    c.audioFaults = c.audioFaults || new Set();
+    if (kind === 'audio') { c.audioFaults.add('mic'); c.audioFaults.add('speaker'); } else c.audioFaults.add(kind);
+    const mic = c.audioFaults.has('mic'), speaker = c.audioFaults.has('speaker');
+    const text = (mic && speaker ? 'Không mở được micro và loa'
+      : mic ? 'Không mở được micro, bên kia không nghe thấy bạn'
+        : 'Không phát được âm thanh ra loa') + '. Kiểm tra PipeWire / PulseAudio.';
+    if (text === c.audioNotice) return;
+    c.audioNotice = text;
+    this.log('audio fault:', [...c.audioFaults].join(' '));
+    if (typeof this.ui.notice === 'function') this.ui.notice(text);
+  }
+
   _peerEnded(why) {
     const c = this.call;
     if (!c || c.state === 'ended') return;

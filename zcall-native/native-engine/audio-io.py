@@ -94,6 +94,14 @@ FRAME_BYTES = FRAME * 2
 log = lambda *a: print("[audio-io]", *a, file=sys.stderr, flush=True)  # noqa: E731
 
 
+def fault(kind: str, why) -> None:
+    """The microphone or the speaker stopped for good: "fault: mic" / "fault:
+    speaker" is the line zrtc-media.js turns into a notice in the call window.
+    Without it a call with no sound server sent nothing for its whole length
+    (tx 0, the phone showed a weak connection) and said nothing (2026-10-11)."""
+    log(f"fault: {kind}", why)
+
+
 def pulse_names(kind: str) -> list[str]:
     """Names of the PulseAudio "sources" or "sinks" (empty if pactl fails)."""
     try:
@@ -189,6 +197,7 @@ class Mic:
                 if proc is not self.proc:
                     continue  # switched: read from the new one
                 log("microphone stream ended")
+                fault("mic", "capture ended")
                 return
             yield pcm
 
@@ -778,6 +787,7 @@ class Playout:
                 self.sink.write(pcm)
             except (BrokenPipeError, ValueError, OSError) as e:
                 log("playout stopped:", e)
+                fault("speaker", e)
                 return
             now = time.monotonic()
             if now - last_report >= self.REPORT_SEC:

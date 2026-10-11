@@ -82,6 +82,9 @@ function render() {
   $('peerCam').classList.toggle('hide', !(s.video && s.peerCamOff && s.phase === 'connected'));
   $('peerMic').classList.toggle('hide', !(s.peerMuted && s.phase === 'connected'));
   $('peerShare').classList.toggle('hide', !(s.peerSharing && s.phase === 'connected'));
+  // Our microphone / speaker stopped (no sound server, device gone): shown in every layout.
+  $('audioNotice').textContent = s.notice || '';
+  $('audioNotice').classList.toggle('hide', !s.notice || ended);
   // Micro: on / off. Camera: only in a video call (grey in a voice call, as in Zalo).
   setIcon($('micIcon'), s.muted ? 'micOff' : 'mic');
   $('mute').title = s.muted ? 'Bật micro' : 'Tắt micro';

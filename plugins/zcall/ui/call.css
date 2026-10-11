@@ -125,6 +125,8 @@ body.has-tiles #stage { display: block; }
 /* Peer state chips, top centre. */
 .notes { position: absolute; top: 10px; left: 80px; right: 80px; display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; z-index: 3; pointer-events: none; }
 .note { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 13px; background: rgba(0, 0, 0, 0.7); font-size: 13px; }
+/* Our microphone / speaker stopped: a sentence, so it wraps instead of the 26 px pill. */
+.note.warn { height: auto; min-height: 26px; padding: 4px 12px; line-height: 18px; text-align: center; background: rgba(176, 32, 32, 0.85); }
 
 /* Expand / compact (screen sharing). */
 #compactBtn { position: absolute; top: 6px; right: 6px; z-index: 4; height: 26px; padding: 0 10px; border-radius: 13px; background: rgba(0, 0, 0, 0.7); font-size: 13px; }

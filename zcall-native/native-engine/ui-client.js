@@ -68,6 +68,15 @@ class ElectronCallUi {
     this._state({ ...this.state, phase: since ? 'connected' : this.state.phase === 'incoming' ? 'connecting' : this.state.phase, text, since });
   }
 
+  // A problem the window keeps showing while the call is up (status() text is
+  // hidden once connected): our microphone or speaker stopped.
+  notice(text) {
+    if (!this.state) return;
+    this.state = { ...this.state, notice: text || '' };
+    this._send({ type: 'state', ...this.state });
+    if (this.fallback) this.fallback.status(text, this.state.since);
+  }
+
   // The peer turned its camera / mic off or on.
   peer({ camOff, muted, sharing }) {
     if (!this.state) return;

@@ -2,7 +2,7 @@
 tools/live-downlink-audio.py and native-engine/audio-io.py.
 
 Sink: pacat when PulseAudio/PipeWire runs (it owns the card during a call),
-else aplay on the USB headset, or a .wav / raw file.
+else aplay on ALSA's default device, or a .wav / raw file.
 OpusJitter: reorder by extended sequence number, Opus PLC for gaps.
 """
 from __future__ import annotations
@@ -17,7 +17,11 @@ from collections import Counter
 from pathlib import Path
 
 FRAME = 320  # 20 ms at 16 kHz
-DEFAULT_DEVICE = "plughw:1,0"  # USB headset on Máy-120; see docs/fix-log/2026-09-29-aplay-usb.md
+# ALSA's default device, whatever card the machine has. plughw:1,0 was the USB
+# headset of one test machine (Máy-120, docs/fix-log/2026-09-29-aplay-usb.md);
+# elsewhere card 1 may have no capture at all ("audio open error", Dell
+# OptiPlex 9020 with PipeWire down, 2026-10-11). --device picks another.
+DEFAULT_DEVICE = "default"
 
 
 def load_opus():

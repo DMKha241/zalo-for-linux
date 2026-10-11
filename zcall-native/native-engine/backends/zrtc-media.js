@@ -579,16 +579,28 @@ class ZrtcMediaBackend extends EventEmitter {
         }
       }
     }
-    this.audio = spawn('python3', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    // audio-io's own messages go to the engine log.
+    const audio = spawn('python3', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.audio = audio;
+    // audio-io's own messages go to the engine log. "fault: mic" / "fault:
+    // speaker" (the device stopped for good) and an audio-io that dies during
+    // the call become 'audioFault' (the call window says so); after stop()
+    // this.audio is null and the teardown says nothing.
     let errBuf = '';
-    this.audio.stderr.setEncoding('utf8');
-    this.audio.stderr.on('data', (d) => {
+    audio.stderr.setEncoding('utf8');
+    audio.stderr.on('data', (d) => {
       const lines = (errBuf + d).split('\n');
       errBuf = lines.pop();
-      for (const l of lines) if (l.trim()) this.log(l.replace(/^\[audio-io\] /, 'audio: '));
+      for (const l of lines) {
+        if (!l.trim()) continue;
+        this.log(l.replace(/^\[audio-io\] /, 'audio: '));
+        const m = /^\[audio-io\] fault: (mic|speaker)\b/.exec(l);
+        if (m && this.audio === audio) this.emit('audioFault', m[1]);
+      }
     });
-    this.audio.on('exit', (code) => this.log('media: audio-io exited', code));
+    audio.on('exit', (code, signal) => {
+      this.log('media: audio-io exited', code === null ? signal : code);
+      if (this.audio === audio) this.emit('audioFault', 'audio');
+    });
     if (this.muted) this.setMute(true);
     if (this.speakerOff) this.setSpeaker(true);
     this.audio.stdin.on('error', () => {});
