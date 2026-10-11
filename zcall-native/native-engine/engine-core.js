@@ -92,6 +92,9 @@ class EngineCore {
     if (typeof this.ui.onDevice === 'function') {
       this.ui.onDevice((kind, name) => { if (this.media.setDevice) this.media.setDevice(kind, name); });
     }
+    if (typeof this.ui.onMicVolume === 'function') {
+      this.ui.onMicVolume((pct) => { if (this.media.setMicVolume) this.media.setMicVolume(pct); });
+    }
     if (typeof this.ui.onSpeaker === 'function') {
       this.ui.onSpeaker((on) => {
         if (this.call) this.call.speakerOff = !!on;
@@ -111,6 +114,8 @@ class EngineCore {
       media.on('failed', (why) => this.hangup(`media-${why}`));
       media.on('peerEnd', (why) => (this.call && this.call.group ? this._groupEnded(why || 'server') : this._peerEnded('server')));
       media.on('audioFault', (kind) => this._audioFault(kind));
+      media.on('micVolume', (pct) => { if (typeof this.ui.micVolume === 'function') this.ui.micVolume(pct); });
+      media.on('micLevel', (level) => { if (typeof this.ui.micLevel === 'function') this.ui.micLevel(level); });
       media.on('roster', (uids) => this._groupRoster(uids));
       media.on('memberLeft', (uid) => this._groupMemberLeft(uid, 'server'));
       media.on('memberAudio', (uid) => this._groupMemberIn(uid));

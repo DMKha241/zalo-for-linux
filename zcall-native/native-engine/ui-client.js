@@ -41,6 +41,7 @@ class ElectronCallUi {
   onVideoFrame(cb) { this.cb.videoFrame = cb; }
   onCamera(cb) { this.cb.camera = cb; }
   onDevice(cb) { this.cb.device = cb; }
+  onMicVolume(cb) { this.cb.micVolume = cb; }
   onScreen(cb) { this.cb.screen = cb; }
   onNeedKey(cb) { this.cb.needKey = cb; }
   onTile(cb) { this.cb.tile = cb; }
@@ -75,6 +76,18 @@ class ElectronCallUi {
     this.state = { ...this.state, notice: text || '' };
     this._send({ type: 'state', ...this.state });
     if (this.fallback) this.fallback.status(text, this.state.since);
+  }
+
+  // The microphone's source volume (0..100 %) for the window's slider.
+  micVolume(pct) {
+    if (!this.state) return;
+    this.state = { ...this.state, micVolume: pct };
+    this._send({ type: 'state', ...this.state });
+  }
+
+  // The loudest of our last 100 ms of microphone (-dBov, 127 = silence): the meter.
+  micLevel(level) {
+    if (this.state) this._send({ type: 'micLevel', level });
   }
 
   // The peer turned its camera / mic off or on.
@@ -187,6 +200,9 @@ class ElectronCallUi {
         return;
       case 'device':
         if (m.kind === 'mic' || m.kind === 'speaker') this.cb.device(m.kind, typeof m.id === 'string' ? m.id : '');
+        return;
+      case 'micVolume':
+        if (this.cb.micVolume && Number.isFinite(Number(m.value))) this.cb.micVolume(Number(m.value));
         return;
       case 'mute':
         if (this.state) this.state = { ...this.state, muted: !!m.on };

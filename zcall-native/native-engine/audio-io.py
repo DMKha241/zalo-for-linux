@@ -12,6 +12,9 @@ Framing on the pipes (big endian):
                                       one received frame; idx = ROC<<16 | seq
           'M' u8 on                   mute the microphone (sends silence)
           'S' u8 on                   speaker off (received audio is played as silence)
+          'V' u8 percent              set the microphone's source volume (0..100, the
+                                      call window's slider); stderr says "mic volume: N%"
+                                      at the start and after every change
           'D' u8 kind, u16 len, name  use another PulseAudio source (kind 'i') or
                                       sink ('o') now; empty name: the default
 Stops when stdin closes. Logs go to stderr.
@@ -957,12 +960,46 @@ class ClipGuard:
         self.total_clipped = 0  # for the diag line
         self.peak = 0
         self.steps = 0
+        self.manual = False  # the call window's slider set the level: no automatic step after it
         if source:
             log(f"mic gain guard {'on' if self.on else 'off'} for {source} (now {self._db()} dB)")
+            self.announce()
 
     def set_source(self, source: str | None):
         self.source = source
         self.on = bool(source) and os.environ.get("ZCALL_MIC_AGC", "1") != "0" and bool(shutil.which("pactl"))
+
+    def _percent(self):
+        """The source volume as pactl and GNOME's slider show it (raw / 65536)."""
+        try:
+            out = subprocess.run(["pactl", "get-source-volume", self.source], capture_output=True, text=True, timeout=3,
+                                 env={**os.environ, "LC_ALL": "C"}).stdout
+            return int(out.split("%")[0].rsplit("/", 1)[1])
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            return None
+
+    def announce(self):
+        """"mic volume: N%" is the line zrtc-media.js shows on the call window's slider."""
+        pct = self._percent() if self.source and shutil.which("pactl") else None
+        if pct is not None:
+            log(f"mic volume: {pct}%")
+
+    def set_percent(self, pct: int):
+        """The call window's slider (0..100 %). The level found there by ear stays: no
+        automatic step after it in this call. A USB headset at 100 % clipped for 10 s
+        before three steps brought it to -9 dB (2026-10-11, 303 clipped samples)."""
+        if not self.source or not shutil.which("pactl"):
+            log("mic volume: no PulseAudio source to set")
+            return
+        pct = max(0, min(100, int(pct)))
+        raw = int(round(65536 * pct / 100))
+        try:
+            subprocess.run(["pactl", "set-source-volume", self.source, str(raw)], capture_output=True, timeout=3)
+        except (OSError, subprocess.SubprocessError) as e:
+            log("mic volume:", e)
+            return
+        self.manual = True
+        self.announce()
 
     def _db(self):
         try:
@@ -988,7 +1025,7 @@ class ClipGuard:
         self.frames = self.clipped = self.win_peak = 0
         now = time.monotonic()
         gap = self.HOT_STEP_SEC if hot else self.STEP_SEC
-        if self.on and not self.busy and (hot or clipped >= self.MIN_CLIPPED) and now - self.last_step >= gap:
+        if self.on and not self.manual and not self.busy and (hot or clipped >= self.MIN_CLIPPED) and now - self.last_step >= gap:
             self.last_step = now
             self.busy = True
             step = self.HOT_STEP_DB if hot else self.STEP_DB
@@ -1006,6 +1043,7 @@ class ClipGuard:
             subprocess.run(["pactl", "set-source-volume", self.source, str(raw)], capture_output=True, timeout=3)
             self.steps += 1
             log(f"mic gain guard: {clipped} clipped samples in 200 ms, {self.source} {cur:.1f} -> {self._db()} dB")
+            self.announce()
         except (OSError, subprocess.SubprocessError) as e:
             log("mic gain guard:", e)
         finally:
@@ -1234,6 +1272,15 @@ def main():
                     break
                 sink.silent = bool(on[0])
                 log("speaker off" if on[0] else "speaker on")
+            elif kind == b"V":
+                pct = read_exact(inp, 1)
+                if pct is None:
+                    break
+                guard = getattr(mic, "guard", None) if mic else None
+                if guard:
+                    threading.Thread(target=guard.set_percent, args=(pct[0],), daemon=True).start()
+                else:
+                    log("mic volume: no microphone level to set")
             elif kind == b"M":
                 on = read_exact(inp, 1)
                 if on is None:

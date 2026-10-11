@@ -488,6 +488,13 @@ class ZrtcMediaBackend extends EventEmitter {
     if (this.audio) this.audio.stdin.write(Buffer.from([0x4d, on ? 1 : 0]));
   }
 
+  // The call window's mic slider: the microphone source's volume, 0..100 %.
+  setMicVolume(percent) {
+    const pct = Math.max(0, Math.min(100, Math.round(Number(percent))));
+    if (!Number.isFinite(pct) || !this.audio) return;
+    this.audio.stdin.write(Buffer.from([0x56, pct]));
+  }
+
   // Speaker off: keep decoding (timing, stats) but play silence.
   setSpeaker(off) {
     this.speakerOff = !!off;
@@ -595,6 +602,8 @@ class ZrtcMediaBackend extends EventEmitter {
         this.log(l.replace(/^\[audio-io\] /, 'audio: '));
         const m = /^\[audio-io\] fault: (mic|speaker)\b/.exec(l);
         if (m && this.audio === audio) this.emit('audioFault', m[1]);
+        const v = /^\[audio-io\] mic volume: (\d+)%/.exec(l);
+        if (v && this.audio === audio) this.emit('micVolume', Number(v[1]));
       }
     });
     audio.on('exit', (code, signal) => {
@@ -618,10 +627,22 @@ class ZrtcMediaBackend extends EventEmitter {
           const n = buf.readUInt16BE(2);
           if (buf.length < 4 + n) break;
           this._sendAudioFrame(buf.subarray(4, 4 + n), buf[1]);
+          this._micLevel(buf[1]);
           buf = buf.subarray(4 + n);
         } else break;
       }
     });
+  }
+
+  // The call window's mic meter: the loudest frame (lowest -dBov) of every
+  // 100 ms, as 'micLevel'. Five frames per message, nothing logged.
+  _micLevel(level) {
+    this.micPeak = Math.min(this.micPeak === undefined ? 127 : this.micPeak, level);
+    const now = Date.now();
+    if (now - (this.micLevelAt || 0) < 100) return;
+    this.micLevelAt = now;
+    this.emit('micLevel', this.micPeak);
+    this.micPeak = 127;
   }
 
   _sendAudioFrame(opus, level = 127) {

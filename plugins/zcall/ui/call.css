@@ -172,6 +172,15 @@ body:not(.phase-connected) #full, body.is-video:not(.has-video):not(.has-tiles) 
 #menu .it:hover { background: var(--menu-hover); }
 #menu .it img { position: absolute; left: 18px; top: 8px; width: 14px; height: 14px; }
 #menu .sep { height: 1px; margin: 4px 0; background: var(--menu-line); }
+/* Microphone level under "Chọn micro": slider, meter of what we send, hint. */
+#menu .vol { padding: 6px 16px 8px 45px; cursor: default; }
+#menu .volTitle { display: flex; justify-content: space-between; color: var(--menu-muted); font-size: 13px; line-height: 20px; }
+#menu .volPct { color: var(--menu-text); font-variant-numeric: tabular-nums; }
+#menu .vol input[type=range] { display: block; width: 100%; margin: 4px 0 6px; accent-color: var(--accent); }
+#menu .meter { height: 6px; border-radius: 3px; background: var(--menu-line); overflow: hidden; }
+#menu .meter .fill { height: 100%; width: 0; background: #2bb673; transition: width 80ms linear; }
+#menu .meter .fill.hot { background: #e5383b; }
+#menu .volHint { margin-top: 4px; color: var(--menu-muted); font-size: 12px; line-height: 16px; white-space: normal; }
 
 /* --- compact: a small tile with the picture, end call and expand --- */
 body.compact #pip, body.compact .notes, body.compact #menu, body.compact .tool, body.compact #camPill, body.compact #peerName { display: none !important; }

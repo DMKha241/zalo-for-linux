@@ -315,6 +315,7 @@ ipcRenderer.on('zcall-ui-state', (_e, s) => {
   screenEncode = state.screenEncode || null;
   if (!camChosen && state.phase) { camChosen = true; if (state.camStartOff) camOn = false; }
   if (state.phase === 'connected' && state.members) syncMembers(state.members); // group tiles
+  if (Number.isFinite(state.micVolume)) micVolumeShown(state.micVolume);
   if (state.phase !== 'connected') {
     stopVideo(); stopLocal(); sharing = false;
     if (pendingScreen) { pendingScreen.stop(); pendingScreen = null; }
@@ -827,6 +828,7 @@ async function openMenu(kind, anchor) {
       r.onclick = (e) => { e.stopPropagation(); closeMenu(); pick(sec.kind, it); };
       menu.appendChild(r);
     }
+    if (sec.kind === 'mic' && Number.isFinite(state.micVolume)) menu.appendChild(micVolumeRow());
   });
   // Right edge 19 past the pill (as measured on Zalo's micro menu), inside the window.
   const r = anchor.getBoundingClientRect();
@@ -836,6 +838,48 @@ async function openMenu(kind, anchor) {
   menu.classList.add('show');
   document.querySelectorAll('.caret').forEach((b) => b.classList.toggle('open', b.dataset.kind === kind));
 }
+// Microphone level, set during the call (the engine moves the PulseAudio source;
+// its automatic step-down stops once this is used). The meter is the loudest
+// 100 ms of what we send: red from -9 dBFS, where a voice starts to clip.
+const MIC_HOT_DBOV = 9;
+let micSlider = null, micMeter = null, micPct = null, micDragging = false, micSentAt = 0, micTimer = null;
+function micVolumeRow() {
+  const row = document.createElement('div'); row.className = 'vol';
+  const title = document.createElement('div'); title.className = 'volTitle';
+  micPct = document.createElement('span'); micPct.className = 'volPct';
+  title.append('Âm lượng micro', micPct);
+  micSlider = document.createElement('input');
+  Object.assign(micSlider, { type: 'range', min: 0, max: 100, step: 1, value: state.micVolume });
+  micSlider.setAttribute('aria-label', 'Âm lượng micro');
+  micMeter = document.createElement('div'); micMeter.className = 'meter';
+  const fill = document.createElement('div'); fill.className = 'fill'; micMeter.appendChild(fill);
+  const hint = document.createElement('div'); hint.className = 'volHint';
+  hint.textContent = 'Nói to bình thường: vạch không nên chạm đỏ.';
+  micPct.textContent = state.micVolume + '%';
+  let last = null; // one message per value: input and change both end here
+  const send = () => { const v = Number(micSlider.value); if (v === last) return; last = v; micSentAt = Date.now(); act('micVolume', { value: v }); };
+  micSlider.oninput = () => {
+    micDragging = true; micPct.textContent = micSlider.value + '%';
+    clearTimeout(micTimer);
+    if (Date.now() - micSentAt >= 150) send(); else micTimer = setTimeout(send, 150);
+  };
+  micSlider.onchange = () => { clearTimeout(micTimer); send(); micDragging = false; };
+  row.onclick = (e) => e.stopPropagation();
+  row.append(title, micSlider, micMeter, hint);
+  return row;
+}
+function micVolumeShown(pct) {
+  if (!micSlider || !document.body.contains(micSlider) || micDragging) return;
+  micSlider.value = pct; micPct.textContent = pct + '%';
+}
+ipcRenderer.on('zcall-ui-mic-level', (_e, level) => {
+  if (!micMeter || !document.body.contains(micMeter)) return;
+  const dbov = Math.max(0, Math.min(60, Number(level)));
+  const fill = micMeter.firstChild;
+  fill.style.width = Math.round((60 - dbov) / 60 * 100) + '%';
+  fill.classList.toggle('hot', dbov <= MIC_HOT_DBOV);
+});
+
 function pick(kind, it) {
   act('device', { kind, id: it.id, label: it.label });
   if (kind !== 'camera') return;

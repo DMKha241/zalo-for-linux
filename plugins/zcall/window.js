@@ -329,6 +329,8 @@ function onEngineMessage(m) {
     if (win && !win.isDestroyed() && winReady) win.webContents.send('zcall-ui-keyframe');
   } else if (m.type === 'speaking') {
     if (win && !win.isDestroyed() && winReady) win.webContents.send('zcall-ui-speaking', m);
+  } else if (m.type === 'micLevel') {
+    if (win && !win.isDestroyed() && winReady) win.webContents.send('zcall-ui-mic-level', m.level);
   } else if (m.type === 'video') {
     if (!win || win.isDestroyed() || !winReady || !lastState || lastState.phase !== 'connected') return;
     enterVideoMode();
