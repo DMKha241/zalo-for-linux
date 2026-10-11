@@ -115,9 +115,10 @@ class EngineCore {
       media.on('memberAudio', (uid) => this._groupMemberIn(uid));
       media.on('video', (pkt) => this._onVideoPacket(pkt));
       media.on('keyframe', (why) => this._requestKeyFrame(why));
-      // 1-1: the rung of the server's ladder our camera is encoded at (send-rate.js).
+      // The rung our camera is encoded at (send-rate.js): the 1-1 ladder, or a
+      // group call's spatial layer after a step down.
       media.on('sendProfile', (p) => {
-        if (this.call && !this.call.group && this.ui.setCameraEncode) this.ui.setCameraEncode(p);
+        if (this.call && this.ui.setCameraEncode) this.ui.setCameraEncode(p);
       });
     }
   }

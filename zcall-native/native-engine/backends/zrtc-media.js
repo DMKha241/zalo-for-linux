@@ -156,7 +156,7 @@ class ZrtcMediaBackend extends EventEmitter {
     this.vKeySent = false; // the phone shows nothing until our first key frame
     this.groupCameraOn = false; // ZaviPing "sending video" bit (ZCALL_GROUP_CAMERA=0: never)
     this.rtcp = null; // RtcpFeedback, 1-1 calls only (set in onNegotiated)
-    this.sendRate = null; // SendRate, 1-1 calls only: the camera's rung of the server ladder
+    this.sendRate = null; // SendRate: 1-1 ladder, or a group call's spatial layers (no climb past the start)
     this.downPrev = null; // last audio reception counters (_downlinkLoss)
     this.groupRtcpIn = null; // group: RTCP kinds the SFU sent (_noteGroupRtcp)
     this.vOut = []; // 1-1 video packets waiting for the pacer: [packet, destination, label]
@@ -234,11 +234,19 @@ class ZrtcMediaBackend extends EventEmitter {
     this.rtcp = groupRtcp && process.env.ZCALL_RTCP !== '0' && this.params.localUid
       ? new RtcpFeedback({ localSsrc: this.params.localUid >>> 0 }) : null;
     if (this.group && this.rtcp) this.log('media: group transport-cc feedback on (ZCALL_GROUP_RTCP=0 turns it off)');
-    this.sendRate = !this.group && this.rtcp && process.env.ZCALL_SEND_RATE !== '0'
-      ? new SendRate(this.params.config, { localSsrc: this.params.localUid >>> 0, log: (...a) => this.log(...a), onProfile: (p) => this.emit('sendProfile', p) })
-      : null;
     // After the counter reset: sub 12 is empty when groupcall has no layers.
     this.videoPlan = this.group ? groupVideoPlan(this.params.config) : null;
+    const rateOn = this.rtcp && process.env.ZCALL_SEND_RATE !== '0';
+    const rateOpts = {
+      localSsrc: this.params.localUid >>> 0,
+      log: (...a) => this.log(...a),
+      onProfile: (p) => this._applySendProfile(p),
+    };
+    if (rateOn && this.group && this.videoPlan && this.videoPlan.rows) {
+      this.sendRate = new SendRate(this.params.config, { ...rateOpts, layers: this.videoPlan.rows, startIndex: this.videoPlan.start });
+    } else if (rateOn && !this.group) {
+      this.sendRate = new SendRate(this.params.config, rateOpts);
+    } else this.sendRate = null;
     this.log('media: negotiated', { servers: this.servers.length, srtpMode: this.params.srtpMode, sendUdp: this.sendUdp });
     this.srtpContext = null;
     this.plainMedia = false;
@@ -621,6 +629,19 @@ class ZrtcMediaBackend extends EventEmitter {
     this.twSeq = (this.twSeq + 1) & 0xffff;
   }
 
+  // 1-1: tell the window the ladder rung. Group: the same, and tell the SFU
+  // the layer we actually encode (sub 12) so it does not keep the old size.
+  _applySendProfile(p) {
+    if (this.group && this.videoPlan && this.videoPlan.encode) {
+      const kbps = Math.round(p.bitrate / 1000);
+      this.videoPlan.encode = { width: p.width, height: p.height, fps: p.fps, bitrate: p.bitrate, keyMs: this.videoPlan.encode.keyMs };
+      this.videoPlan.send = [{ id: 0, a: kbps, b: p.width, c: p.height }];
+      this.vidCfgLogged = false;
+      if (this.active && this.activeServer) this._sendVidQualConfig();
+    }
+    this.emit('sendProfile', p);
+  }
+
   // One encoded frame from the call window (H.264 Annex-B). Same RTP layout
   // as the phone's video: SSRC = our UID (shared with audio), 90 kHz clock,
   // PT 98 key / 97 other, transport-cc extension, marker on the last packet.
@@ -669,6 +690,7 @@ class ZrtcMediaBackend extends EventEmitter {
       }
       this.vTxWin.bytes += rtp.length;
       this.vTxWin.pkts++;
+      if (groupCam) this.vTxWin.lastTx = Date.now();
       if (this.sendRate) this.sendRate.onSent(this.twSeq);
       this.vSeq = (this.vSeq + 1) & 0xffff;
       if (this.vSeq === 0) this.vRoc++;

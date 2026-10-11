@@ -25,6 +25,10 @@
 // the phone's audio and 27 % of its video, both ways crackling. Steps up need
 // UP_HOLD_S clean seconds of transport-cc, never report blocks alone, and wait
 // longer after each step down that followed a step up.
+// A group call passes its own spatial layers (opts.layers) and a ceiling at the
+// layer it starts on: the camera steps down on the same signals and never climbs
+// past that layer. The SFU often sends no transport-cc about our packets, so the
+// "no feedback" step waits until one transport-cc window has arrived.
 
 const { parseTwcc } = require('./rtcp');
 
@@ -57,34 +61,49 @@ const LOG_MS = 5000;
 function num(v, d) { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; }
 
 class SendRate {
-  constructor(config = {}, { localSsrc, log = () => {}, onProfile = () => {}, now = () => Date.now() } = {}) {
+  constructor(config = {}, { localSsrc, log = () => {}, onProfile = () => {}, now = () => Date.now(), layers = null, startIndex = 0 } = {}) {
     const c = config && typeof config === 'object' ? config : {};
     this.localSsrc = localSsrc >>> 0;
     this.log = log;
     this.onProfile = onProfile;
     this.now = now;
-    const maxW = num(c.maxWidth, 1280), maxH = num(c.maxHeight, 720);
-    const maxFps = num(c.codecMaxFps, 24), maxKbps = num(c.maxBitrate, 1500);
-    const src = Array.isArray(c.bwProfiles) && c.bwProfiles.length ? c.bwProfiles : DEFAULT_LADDER;
-    this.ladder = src
-      .map((p) => ({ id: p.id, res: Number(p.res), fps: Math.min(num(p.fps, 15), maxFps), kbps: Number(p.bitrate) }))
-      .filter((p) => SIZES[p.res] && p.kbps >= MIN_KBPS && p.kbps <= maxKbps && SIZES[p.res][0] <= maxW && SIZES[p.res][1] <= maxH)
-      .sort((a, b) => a.kbps - b.kbps);
-    if (!this.ladder.length) this.ladder = DEFAULT_LADDER.filter((p) => p.kbps >= MIN_KBPS).map((p) => ({ ...p, kbps: p.bitrate }));
-    const startKbps = num(c.startupBitrate, START_KBPS);
-    let start = 0;
-    this.ladder.forEach((p, i) => { if (p.kbps <= startKbps) start = i; });
-    if (process.env.ZCALL_VIDEO_RUNG) {
-      const i = this.ladder.findIndex((p) => String(p.id) === process.env.ZCALL_VIDEO_RUNG);
-      if (i >= 0) start = i;
+    this.seenTwcc = false;
+    if (Array.isArray(layers) && layers.length) {
+      this.ladder = layers.map((p, i) => ({
+        id: p.id != null ? p.id : i,
+        width: p.width, height: p.height,
+        fps: num(p.fps, 15), kbps: Number(p.kbps),
+      })).filter((p) => p.width > 0 && p.height > 0 && p.kbps > 0);
+      if (!this.ladder.length) throw new Error('group send-rate ladder is empty');
+      this.level = Math.min(Math.max(0, startIndex | 0), this.ladder.length - 1);
+      this.ceiling = this.level;
+      this.armTimeout = true;
+    } else {
+      const maxW = num(c.maxWidth, 1280), maxH = num(c.maxHeight, 720);
+      const maxFps = num(c.codecMaxFps, 24), maxKbps = num(c.maxBitrate, 1500);
+      const src = Array.isArray(c.bwProfiles) && c.bwProfiles.length ? c.bwProfiles : DEFAULT_LADDER;
+      this.ladder = src
+        .map((p) => ({ id: p.id, res: Number(p.res), fps: Math.min(num(p.fps, 15), maxFps), kbps: Number(p.bitrate) }))
+        .filter((p) => SIZES[p.res] && p.kbps >= MIN_KBPS && p.kbps <= maxKbps && SIZES[p.res][0] <= maxW && SIZES[p.res][1] <= maxH)
+        .sort((a, b) => a.kbps - b.kbps);
+      if (!this.ladder.length) this.ladder = DEFAULT_LADDER.filter((p) => p.kbps >= MIN_KBPS).map((p) => ({ ...p, kbps: p.bitrate }));
+      const startKbps = num(c.startupBitrate, START_KBPS);
+      let start = 0;
+      this.ladder.forEach((p, i) => { if (p.kbps <= startKbps) start = i; });
+      if (process.env.ZCALL_VIDEO_RUNG) {
+        const i = this.ladder.findIndex((p) => String(p.id) === process.env.ZCALL_VIDEO_RUNG);
+        if (i >= 0) start = i;
+      }
+      this.level = start;
+      this.ceiling = this.ladder.length - 1;
+      this.armTimeout = false;
     }
     this.fixed = process.env.ZCALL_VIDEO_ADAPT === '0';
-    this.level = start;
     this.highLoss = num(c.bweSendSideHighLoss, 10) / 100;
     this.lowLoss = num(c.bweSendSideLowLoss, 2) / 100;
     this.keyMs = num(c.keyFrameIntervalMs, SAFETY_KEY_MS);
     // The camera must be captured big enough for the top rung (else it is upscaled).
-    this.captureBig = this.ladder.some((p) => SIZES[p.res][0] > 640);
+    this.captureBig = this.ladder.some((p) => this._dims(p)[0] > 640);
     this.sent = new Map(); // transport-wide seq (16 bit) -> send time (ms)
     this.win = this._newWindow();
     this.minDelays = []; // [time, smallest arrival - send of that second]
@@ -97,20 +116,30 @@ class SendRate {
     this.lastLogAt = 0;
     this.history = []; // per second since the last log line: "loss%/queue ms/downlink%"
     this.totals = { twccPkts: 0, twccLost: 0, rrBlocks: 0, changes: 0, downs: 0 };
-    this.log(`send-rate: ladder ${this.ladder.map((p) => `${p.id}:${p.res}p${p.fps}/${p.kbps}k`).join(' ')}, start ${this._name()}, ` +
+    const rung = (p) => (p.res ? `${p.id}:${p.res}p${p.fps}/${p.kbps}k` : `${p.id}:${p.width}x${p.height}/${p.fps}fps/${p.kbps}k`);
+    this.log(`send-rate: ladder ${this.ladder.map(rung).join(' ')}, start ${this._name()}, ` +
       `loss marks ${this.lowLoss * 100}..${this.highLoss * 100} %, queue marks ${QUEUE_HOLD_MS}..${QUEUE_DOWN_MS} ms, key every ${this.keyMs} ms` +
+      (this.armTimeout ? `, no climb past id ${this.ladder[this.ceiling].id}` : '') +
       (this.fixed ? ', adaptation OFF (ZCALL_VIDEO_ADAPT=0)' : ''));
     this.onProfile(this.profile());
   }
 
   _newWindow() { return { twccRecv: 0, twccLost: 0, rr: [], delays: [] }; }
 
-  _name(p = this.ladder[this.level]) { return `id ${p.id} ${SIZES[p.res][0]}x${SIZES[p.res][1]} ${p.fps} fps ${p.kbps} kbps`; }
+  _dims(p) {
+    if (p.width > 0 && p.height > 0) return [p.width, p.height];
+    return SIZES[p.res];
+  }
+
+  _name(p = this.ladder[this.level]) {
+    const [w, h] = this._dims(p);
+    return `id ${p.id} ${w}x${h} ${p.fps} fps ${p.kbps} kbps`;
+  }
 
   // What the window encodes: the exact size (cut from the camera), fps, bitrate, key interval.
   profile() {
     const p = this.ladder[this.level];
-    const [width, height] = SIZES[p.res];
+    const [width, height] = this._dims(p);
     return { width, height, fps: p.fps, bitrate: p.kbps * 1000, keyMs: this.keyMs, captureBig: this.captureBig, rung: p.id };
   }
 
@@ -180,11 +209,12 @@ class SendRate {
       queue = Math.max(0, Math.round(sorted[Math.floor(sorted.length / 2)] - base));
     }
     this.noFeedback = twcc ? 0 : this.noFeedback + 1;
+    if (twcc) this.seenTwcc = true;
     this.history.push(`${loss === null ? '-' : Math.round(loss * 1000) / 10}/${queue === null ? '-' : queue}/${downLoss === null ? '-' : Math.round(downLoss * 1000) / 10}`);
     if (!this.fixed && sending) {
       const pct = (x) => (x * 100).toFixed(1) + ' %';
       let down = null, hold = false;
-      if (this.noFeedback >= FEEDBACK_TIMEOUT_S) down = `no transport-cc for ${this.noFeedback} s`;
+      if (this.noFeedback >= FEEDBACK_TIMEOUT_S && !(this.armTimeout && !this.seenTwcc)) down = `no transport-cc for ${this.noFeedback} s`;
       else if (loss !== null && loss > this.highLoss) down = `loss ${pct(loss)} (${src}) > ${this.highLoss * 100} %`;
       else if (queue !== null && queue > QUEUE_DOWN_MS) down = `queue ${queue} ms > ${QUEUE_DOWN_MS} ms`;
       else if (downLoss !== null && downLoss > DOWNLINK_DOWN) down = `we lose ${pct(downLoss)} of the phone's packets`;
@@ -200,7 +230,7 @@ class SendRate {
           this._set(this.level - 1, down);
         }
       } else if (hold) this.good = 0;
-      else if (++this.good >= UP_HOLD_S && this.level < this.ladder.length - 1 && now - this.lastDownAt >= this.backoffMs) {
+      else if (++this.good >= UP_HOLD_S && this.level < this.ceiling && now - this.lastDownAt >= this.backoffMs) {
         this.good = 0;
         this.lastUpAt = now;
         this._set(this.level + 1, `clean for ${UP_HOLD_S} s (loss ${pct(loss)}, queue ${queue === null ? '-' : queue + ' ms'})`);
