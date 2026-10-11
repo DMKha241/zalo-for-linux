@@ -129,3 +129,5 @@ typings/
 # Temporary directories
 tmp/
 temp/ 
+# Python bytecode (py_compile, a local run of audio-io.py)
+__pycache__/
