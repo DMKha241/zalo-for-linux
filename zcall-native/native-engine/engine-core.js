@@ -113,6 +113,7 @@ class EngineCore {
       media.on('timeout', () => this.hangup('media-timeout'));
       media.on('failed', (why) => this.hangup(`media-${why}`));
       media.on('peerEnd', (why) => (this.call && this.call.group ? this._groupEnded(why || 'server') : this._peerEnded('server')));
+      media.on('earlyAudio', (phase) => this._earlyAudio(phase));
       media.on('audioFault', (kind) => this._audioFault(kind));
       media.on('micVolume', (pct) => { if (typeof this.ui.micVolume === 'function') this.ui.micVolume(pct); });
       media.on('micLevel', (level) => { if (typeof this.ui.micLevel === 'function') this.ui.micLevel(level); });
@@ -330,12 +331,7 @@ class EngineCore {
           this._finish(103, status === 3 ? 'Người nhận đã từ chối' : 'Không liên lạc được');
           return;
         }
-        c.state = 'connected';
-        c.startedAt = Date.now();
-        this.media.start(c.role, params.rtpSerIp);
-        this.emit({ type: 'sendSignal', command: 408, data: { callId: c.callId, calleeId: c.peerId } });
-        if (c.type === 3) this._camMic();
-        this.ui.status('Đã kết nối', c.startedAt);
+        this._connectCaller(params.rtpSerIp);
         return;
       }
       case 'end_call':
@@ -540,7 +536,36 @@ class EngineCore {
     c.video.push(pkt);
   }
 
-  // The other side hung up, cancelled or declined.
+  // Caller side is up: our server unless the answer named one. 408 tells Zalo.
+  _connectCaller(rtpSerIp) {
+    const c = this.call;
+    if (!c || c.role !== 'caller' || c.state === 'connected' || c.state === 'ended') return;
+    c.state = 'connected';
+    c.startedAt = Date.now();
+    this.media.start(c.role, rtpSerIp || null);
+    this.emit({ type: 'sendSignal', command: 408, data: { callId: c.callId, calleeId: c.peerId } });
+    if (c.type === 3) this._camMic();
+    this.ui.status('Đã kết nối', c.startedAt);
+  }
+
+  // Peer RTP before the answer control. The first frame means the other phone
+  // is in the call, so the window leaves "Đang gọi…". A full second of frames
+  // with still no answer means that control was lost: connect on our server.
+  _earlyAudio(phase) {
+    const c = this.call;
+    if (!c || c.group || c.role !== 'caller' || c.state === 'connected' || c.state === 'ended') return;
+    if (phase === 'first' && c.state === 'calling') {
+      c.state = 'ringing';
+      this.ui.status('Đang đổ chuông…');
+      this.log('peer audio during setup, no ring signal yet');
+      return;
+    }
+    if (phase === 'stream') {
+      this.log('answer signal missing, connecting on peer audio');
+      this._connectCaller(null);
+    }
+  }
+
   // The microphone, the speaker or all of audio-io stopped during the call (no
   // sound server, a device gone). The call goes on (the other side may still
   // hear us, or we them), and the window says what is wrong, once per device.
@@ -559,6 +584,7 @@ class EngineCore {
     if (typeof this.ui.notice === 'function') this.ui.notice(text);
   }
 
+  // The other side hung up, cancelled or declined.
   _peerEnded(why) {
     const c = this.call;
     if (!c || c.state === 'ended') return;

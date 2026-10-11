@@ -41,10 +41,15 @@ played and what the microphone sent, raw 16 kHz mono s16le, to
 <ZCALL_LOG_DIR>/call-<time>-played.raw and -mic.raw (after the processing,
 before Opus; silence while muted), to find where speech breaks up.
 
-With PipeWire the microphone goes through WebRTC audio processing (echo
-cancellation and noise suppression), as the real engine does
-(zrtc_config audioEchoCancellation / audioNoiseSuppression), and received
-audio is played through it as the echo reference. Playback is primed before
+With PipeWire the microphone goes through WebRTC echo cancellation, as the
+real engine does (zrtc_config audioEchoCancellation), and received audio is
+played through it as the echo reference. Noise suppression is OFF unless
+ZCALL_NOISE_SUPPRESSION=1, whatever audioNoiseSuppression says: on real
+recordings (2026-10-07, USB headset, speech ~18 dB over the noise) it let the
+first 1-2 s through, then cut the voice by 26-32 dB, to about -57 dBFS: the
+phone heard a word and then nothing. Again on 2026-10-12 (the same complaint:
+long speech goes silent, a voice away from the microphone is not heard).
+MicLeveler then lifts the speech that is left to a call level. Playback is primed before
 the microphone starts: Zalo's AudioDevice starts playout before recording
 whenever AEC is on, so the canceller already has a reference. The high-pass
 filter is on unless --no-high-pass (zrtcConfig audioHighPassFilter false).
@@ -611,17 +616,25 @@ class _Stream:
                 if self.next is None or first > self.next:
                     self.next = first
         self.since_drop += 1
-        span = max(self.packets) - self.next + 1 if self.packets else 0
-        # Far over the target (a burst): shrink every frame. A little over:
-        # at most once per 200 ms, same as before, but by one pitch period.
-        eager = span > self.target + 8
-        if span > self.target + 2 and (eager or self.since_drop >= 10) and self._ensure(FRAME_BYTES * 2):
-            self.since_drop = 0
-            self.stats["accelerate"] += 1
-            if _rms(self.carry[:FRAME_BYTES]) >= 300:
-                self.stats["accelerate_loud"] += 1
-            played, self.carry = _wsola_shrink(self.carry)
-            return played
+        span = max(self.packets) - self.next + 1 if self.packets and self.next is not None else 0
+        # Far over the target (a burst, or the sender's clock jumped): drop
+        # back to the target once. Shrinking every frame through that spike
+        # is the rasp, and it also moves the echo delay so the canceller
+        # gates the near end. NetEq resets a buffer that is this far past
+        # its target instead of time-compressing the speech.
+        if span > self.target + 10:
+            skipped = self._discard_to(self.target)
+            if skipped:
+                log(f"playout: buffer reset, skipped {skipped * 20} ms")
+            span = max(self.packets) - self.next + 1 if self.packets and self.next is not None else 0
+        # A little over: one pitch period, at most every 200 ms, and only
+        # while this frame is quiet. Loud speech keeps its pitch.
+        if span > self.target + 2 and self.since_drop >= 10 and self._ensure(FRAME_BYTES * 2):
+            if _rms(self.carry[:FRAME_BYTES]) < 800:
+                self.since_drop = 0
+                self.stats["accelerate"] += 1
+                played, self.carry = _wsola_shrink(self.carry)
+                return played
         if self._ensure(FRAME_BYTES):
             return self._take(self.carry)
         if self.packets and (len(self.packets) >= self.target or self.expand >= self.MAX_EXPAND):
@@ -645,6 +658,26 @@ class _Stream:
         self.expand = 0
         self.playing = False
         return None
+
+    def _discard_to(self, keep: int) -> int:
+        """Drop audio sitting ahead of `next` until `keep` frames remain.
+
+        Returns how many 20 ms frames were skipped. The decoder continues at
+        the first packet kept, so the skip is one gap, then the delay stays."""
+        if not self.packets or self.next is None:
+            return 0
+        last = max(self.packets)
+        extra = last - self.next + 1 - keep
+        if extra <= 0:
+            return 0
+        cut = self.next + extra
+        for idx in [i for i in self.packets if i < cut]:
+            del self.packets[idx]
+        self.next = min(self.packets) if self.packets else cut
+        self.carry = b""
+        self.expand = 0
+        self.stats["reset"] += 1
+        return extra
 
 
 def _rms(pcm: bytes) -> float:
@@ -725,6 +758,9 @@ class Playout:
         self.lock = threading.Lock()
         self.stats = Counter()
         self.stop = threading.Event()
+        # MicLeveler holds its gain while the far end sounds: what the canceller
+        # leaves of that echo must not be lifted with the voice (2026-10-12).
+        self.far_until = 0.0
         self.thread = threading.Thread(target=self._clock, daemon=True)
         self.thread.start()
 
@@ -784,8 +820,14 @@ class Playout:
     def _report(self):
         with self.lock:
             targets = {src: s.target * 20 for src, s in self.sources.items()}
-        keys = ("opus_ok", "lost", "fec", "plc", "underrun", "accelerate", "late")
+        keys = ("opus_ok", "lost", "fec", "plc", "underrun", "accelerate", "reset", "late")
         log("playout:", {k: self.stats[k] for k in keys if self.stats[k]}, "buffer ms", targets)
+
+    FAR_RMS = 300          # ~ -40 dBFS: the far end is talking
+    FAR_HOLD_SEC = 0.35    # its echo comes back within this (card + canceller delay)
+
+    def far_active(self) -> bool:
+        return time.monotonic() < self.far_until
 
     def _clock(self):
         paced = isinstance(self.sink, PulseOut)
@@ -795,6 +837,8 @@ class Playout:
             t = time.monotonic()
             pcm = self._mix()
             DUMP.write("played", pcm)
+            if not getattr(self.sink, "silent", False) and _rms(pcm) >= self.FAR_RMS:
+                self.far_until = time.monotonic() + self.FAR_HOLD_SEC
             self.mix_max = max(self.mix_max, time.monotonic() - t)
             if latency:
                 ms = latency()
@@ -837,7 +881,7 @@ class Diag:
     (pw-top ERR) of the nodes we use, and speaker resyncs in its journal."""
 
     DIAG_SEC = 10
-    KEYS = ("opus_ok", "lost", "fec", "plc", "underrun", "accelerate", "accelerate_loud", "late", "dup")
+    KEYS = ("opus_ok", "lost", "fec", "plc", "underrun", "accelerate", "accelerate_loud", "reset", "late", "dup")
 
     def __init__(self, playout: "Playout", mic: "Mic | None", tag: str):
         self.playout, self.mic, self.tag = playout, mic, tag
@@ -931,36 +975,35 @@ class Diag:
 class ClipGuard:
     """Turns the microphone's PulseAudio source down when its speech clips, as
     the real engine's analog AGC does (AgcManagerDirect turns the OS microphone
-    volume; zrtc_config audioGainControl true, agcMaxLevel 200). A USB headset
-    at its 0 dB maximum clipped hard: 12233 samples at full scale, 563 frames
-    over -6 dBFS in a 41 s 1-1 call (dump 2026-10-10); the phone heard it
-    distorted, and its own echo canceller then cut its voice (12 of 13 silent
-    holes in what it sent came right after our clipping). A Jieli headset still
-    peaked at 0 dBFS after two 3 dB steps (Dell, 2026-10-10): while the window
-    still hits full scale the step is 6 dB and may repeat after HOT_STEP_SEC.
-    Otherwise 3 dB, at most once per STEP_SEC. Never below FLOOR_DB. The level
-    stays for the next calls, as with Zalo on Windows / macOS. ZCALL_MIC_AGC=0: off."""
+    volume; one knob, a few dB at a time). A USB headset at 0 dB clipped hard
+    (dump 2026-10-10). A 6 dB step every 0.2 s did not: the level jumped back
+    toward 0 dB between steps (2026-10-11, 0 -> -6 -> -12, then -1.4) and the
+    processed mic then sat at -50..-80 dBFS. One 3 dB step per second, and only
+    when the window actually has MIN_CLIPPED full-scale samples. Never below
+    FLOOR_DB. The level stays for the next calls. ZCALL_MIC_AGC=0: off.
+    Digital AGC stays off (webrtc.gain_control false): two AGCs on this path rasp."""
 
     WINDOW = 10          # frames (200 ms) per decision
     CLIP = 31000         # |sample| counted as clipped (after resampling a full-scale flat top)
     MIN_CLIPPED = 16     # clipped samples per window (0.5 %) that trigger a step
     STEP_DB = 3.0
-    STEP_SEC = 0.6
-    HOT_STEP_DB = 6.0    # the peak is still full scale: the last step was not enough
-    HOT_STEP_SEC = 0.2
+    STEP_SEC = 1.0
     FLOOR_DB = -24.0
 
     def __init__(self, source: str | None):
         self.source = source
         self.on = bool(source) and os.environ.get("ZCALL_MIC_AGC", "1") != "0" and bool(shutil.which("pactl"))
         self.frames = self.clipped = 0
-        self.win_peak = 0
         self.last_step = 0.0
         self.busy = False
         self.total_clipped = 0  # for the diag line
         self.peak = 0
         self.steps = 0
         self.manual = False  # the call window's slider set the level: no automatic step after it
+        self.vol_lock = threading.Lock()
+        self.announced_pct = None
+        self.announced_at = 0.0
+        self.set_db = None  # the level we last wrote, so a jump back toward 0 dB is visible
         if source:
             log(f"mic gain guard {'on' if self.on else 'off'} for {source} (now {self._db()} dB)")
             self.announce()
@@ -982,24 +1025,36 @@ class ClipGuard:
         """"mic volume: N%" is the line zrtc-media.js shows on the call window's slider."""
         pct = self._percent() if self.source and shutil.which("pactl") else None
         if pct is not None:
+            self.announced_pct = pct
+            self.announced_at = time.monotonic()
             log(f"mic volume: {pct}%")
 
     def set_percent(self, pct: int):
         """The call window's slider (0..100 %). The level found there by ear stays: no
-        automatic step after it in this call. A USB headset at 100 % clipped for 10 s
-        before three steps brought it to -9 dB (2026-10-11, 303 clipped samples)."""
+        automatic step after it in this call. A raise that arrives within 0.6 s of
+        our own announce is the slider repeating its old position (2026-10-11,
+        72% then 100% 0.3 s later, and the knob jumped back toward 0 dB)."""
         if not self.source or not shutil.which("pactl"):
             log("mic volume: no PulseAudio source to set")
             return
         pct = max(0, min(100, int(pct)))
-        raw = int(round(65536 * pct / 100))
-        try:
-            subprocess.run(["pactl", "set-source-volume", self.source, str(raw)], capture_output=True, timeout=3)
-        except (OSError, subprocess.SubprocessError) as e:
-            log("mic volume:", e)
-            return
-        self.manual = True
-        self.announce()
+        with self.vol_lock:
+            now = time.monotonic()
+            if self.announced_pct is not None and now - self.announced_at < 0.6 and pct > self.announced_pct + 2:
+                log(f"mic volume: ignore {pct}% right after {self.announced_pct}%")
+                return
+            cur = self._percent()
+            if cur is not None and abs(cur - pct) <= 2:
+                return
+            raw = int(round(65536 * pct / 100))
+            try:
+                subprocess.run(["pactl", "set-source-volume", self.source, str(raw)], capture_output=True, timeout=3)
+            except (OSError, subprocess.SubprocessError) as e:
+                log("mic volume:", e)
+                return
+            self.manual = True
+            self.set_db = self._db()
+            self.announce()
 
     def _db(self):
         try:
@@ -1017,33 +1072,37 @@ class ClipGuard:
         if a:
             peak = max(max(a), -min(a))
             self.peak = max(self.peak, peak)
-            self.win_peak = max(self.win_peak, peak)
         self.frames += 1
         if self.frames < self.WINDOW:
             return
-        clipped, hot = self.clipped, self.win_peak >= self.CLIP
-        self.frames = self.clipped = self.win_peak = 0
+        clipped = self.clipped
+        self.frames = self.clipped = 0
         now = time.monotonic()
-        gap = self.HOT_STEP_SEC if hot else self.STEP_SEC
-        if self.on and not self.manual and not self.busy and (hot or clipped >= self.MIN_CLIPPED) and now - self.last_step >= gap:
+        if self.on and not self.manual and not self.busy and clipped >= self.MIN_CLIPPED and now - self.last_step >= self.STEP_SEC:
             self.last_step = now
             self.busy = True
-            step = self.HOT_STEP_DB if hot else self.STEP_DB
-            threading.Thread(target=self._step, args=(clipped, step), daemon=True).start()
+            threading.Thread(target=self._step, args=(clipped, self.STEP_DB), daemon=True).start()
 
     def _step(self, clipped, step):
         try:
-            cur = self._db()
-            if cur is None or cur <= self.FLOOR_DB + 0.01:
-                return
-            new = max(self.FLOOR_DB, cur - step)
-            # Raw volume (PulseAudio's cubic scale: dB = 60 log10(v / 65536)); pactl
-            # misreads "-6.0dB" (it set -9 dB, and "-9.0dB" -18 dB, 2026-10-10).
-            raw = int(round(65536 * 10 ** (new / 60)))
-            subprocess.run(["pactl", "set-source-volume", self.source, str(raw)], capture_output=True, timeout=3)
-            self.steps += 1
-            log(f"mic gain guard: {clipped} clipped samples in 200 ms, {self.source} {cur:.1f} -> {self._db()} dB")
-            self.announce()
+            with self.vol_lock:
+                if self.manual:
+                    return
+                cur = self._db()
+                if cur is None or cur <= self.FLOOR_DB + 0.01:
+                    return
+                if self.set_db is not None and cur > self.set_db + 2.0:
+                    log(f"mic gain guard: volume back at {cur:.1f} dB (last set {self.set_db:.1f})")
+                new = max(self.FLOOR_DB, cur - step)
+                # Raw volume (PulseAudio's cubic scale: dB = 60 log10(v / 65536)); pactl
+                # misreads "-6.0dB" (it set -9 dB, and "-9.0dB" -18 dB, 2026-10-10).
+                raw = int(round(65536 * 10 ** (new / 60)))
+                subprocess.run(["pactl", "set-source-volume", self.source, str(raw)], capture_output=True, timeout=3)
+                self.steps += 1
+                got = self._db()
+                self.set_db = got if got is not None else new
+                log(f"mic gain guard: {clipped} clipped samples in 200 ms, {self.source} {cur:.1f} -> {got} dB")
+                self.announce()
         except (OSError, subprocess.SubprocessError) as e:
             log("mic gain guard:", e)
         finally:
@@ -1106,7 +1165,128 @@ def audio_level(pcm: bytes) -> int:
     return min(127, max(0, int(round(-20 * math.log10(rms / 32768)))))
 
 
-def encoder_loop(args, opus, muted, out, lock, mic, guard=None):
+class MicLeveler:
+    """Software make-up gain for the microphone, in front of the encoder
+    (from the 2026-10-07 fix, Zalo-Linux-Native-Dev; reworked 2026-10-12).
+
+    The real engine raises a weak microphone with one analog AGC (the OS
+    microphone volume, AgcManagerDirect). On a microphone already near 100 %
+    that cannot help, and PipeWire's own webrtc AGCs pump (see the top of this
+    file). Measured 2026-10-07 on a USB headset: speech -28 dBFS, noise -46
+    dBFS at the source, -43 dBFS after the processing: the phone heard nothing.
+
+    One slow gain, applied to speech only, aimed at TARGET_DB. It never lifts
+    the noise floor above NOISE_CEIL_DB (a noisy microphone is not turned into
+    a hiss), and never exceeds full scale. What the first version did wrong,
+    heard on 2026-10-12: the gain stepped at every 20 ms frame boundary (a
+    rasp at the end of words), fell by half its distance in one frame and
+    climbed back at 3 % (+0.2..+17 dB within one call), started at 0 dB after
+    a 1 s learning pause (the first words quiet), and rose on the echo of the
+    far end too (the phone heard itself). Now:
+    - the gain moves sample by sample inside a frame, from the last frame's;
+    - it moves at most UP_DB / DOWN_DB per speech frame;
+    - it does not move while the far end sounds (far_active), so echo left by
+      the canceller is never what it adapts to;
+    - the noise floor is known after 0.4 s, and the gain of the last call
+      (ZCALL_LOG_DIR/mic-leveler.json) is where it starts.
+    ZCALL_MIC_GAIN=0 turns it off."""
+
+    TARGET_DB = -22.0         # wanted speech level, dBFS rms
+    NOISE_CEIL_DB = -38.0     # noise floor after the gain stays below this
+    MAX_GAIN_DB = 24.0
+    SPEECH_OVER_NOISE_DB = 9.0
+    FLOOR_DB = -60.0          # below this a frame is never speech
+    LEARN_FRAMES = 20         # 0.4 s of noise floor before any change
+    UP_DB = 0.5               # per speech frame: +25 dB/s at most
+    DOWN_DB = 1.0             # per speech frame: a loud word comes down in 0.2 s
+    LOG_EVERY = 250           # frames: 5 s
+
+    def __init__(self, far_active=None, state_path=None):
+        self.far_active = far_active or (lambda: False)
+        self.state_path = state_path
+        self.gain_db = self._load()
+        self.g_prev = 10 ** (self.gain_db / 20)
+        self.noise_db = -70.0
+        self.levels = deque(maxlen=250)  # 5 s of frame levels
+        self.n = 0
+        self.speech = 0
+        self.held = 0
+        self.speech_db = []
+        if self.gain_db:
+            log(f"mic level: starting at +{self.gain_db:.1f} dB (the last call)")
+
+    def _load(self) -> float:
+        if not self.state_path:
+            return 0.0
+        import json
+        try:
+            g = float(json.loads(Path(self.state_path).read_text())["gain_db"])
+        except FileNotFoundError:
+            return 0.0  # the first call: start flat
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            log("mic level: ignoring", self.state_path, e)
+            return 0.0
+        return max(0.0, min(self.MAX_GAIN_DB, g))
+
+    def _save(self):
+        if not self.state_path:
+            return
+        try:
+            import json
+            Path(self.state_path).write_text(json.dumps({"gain_db": round(self.gain_db, 2)}))
+        except OSError as e:
+            log("mic level: cannot save", e)
+
+    @staticmethod
+    def _level_db(a) -> float:
+        rms = math.sqrt(sum(v * v for v in a) / len(a)) if len(a) else 0.0
+        return 20 * math.log10(max(rms, 1.0) / 32768)
+
+    def process(self, pcm: bytes) -> bytes:
+        a = array("h", pcm)
+        level = self._level_db(a)
+        self.levels.append(level)
+        self.n += 1
+        if len(self.levels) >= self.LEARN_FRAMES and (self.n % 25 == 0 or len(self.levels) == self.LEARN_FRAMES):
+            self.noise_db = sorted(self.levels)[len(self.levels) // 10]  # 10th percentile: the pauses
+        if len(self.levels) >= self.LEARN_FRAMES and level > self.FLOOR_DB and level > self.noise_db + self.SPEECH_OVER_NOISE_DB:
+            if self.far_active():
+                self.held += 1
+            else:
+                self.speech += 1
+                self.speech_db.append(level)
+                ceiling = min(self.MAX_GAIN_DB, max(0.0, self.NOISE_CEIL_DB - self.noise_db))
+                want = min(max(self.TARGET_DB - level, 0.0), ceiling)
+                self.gain_db += max(-self.DOWN_DB, min(self.UP_DB, want - self.gain_db))
+        if self.n % self.LOG_EVERY == 0:
+            sp = sorted(self.speech_db)
+            held = f", held {100 * self.held // self.LOG_EVERY}% (far end)" if self.held else ""
+            log(f"mic level: noise {self.noise_db:.0f} dBFS, speech {sp[len(sp) // 2]:.0f} dBFS before the gain, "
+                f"gain +{self.gain_db:.1f} dB, speech in {100 * self.speech // self.LOG_EVERY}% of frames{held}" if sp else
+                f"mic level: noise {self.noise_db:.0f} dBFS, no speech, gain +{self.gain_db:.1f} dB{held}")
+            self.speech = self.held = 0
+            self.speech_db = []
+            self._save()
+        g = 10 ** (self.gain_db / 20)
+        g0, n = self.g_prev, len(a)
+        peak = max((abs(v) for v in a), default=0)
+        if peak:
+            # Neither end of the ramp may clip this frame: a loud word right
+            # after a high gain is limited from its first sample.
+            lim = 32000 / peak
+            g, g0 = min(g, lim), min(g0, lim)
+        self.g_prev = g
+        if abs(g - 1.0) < 0.01 and abs(g0 - 1.0) < 0.01:
+            return pcm
+        step = (g - g0) / n
+        out = array("h", bytes(len(pcm)))
+        for i, v in enumerate(a):
+            x = int(v * (g0 + step * (i + 1)))
+            out[i] = 32767 if x > 32767 else (-32768 if x < -32768 else x)
+        return out.tobytes()
+
+
+def encoder_loop(args, opus, muted, out, lock, mic, guard=None, far_active=None):
     err = ctypes.c_int(0)
     enc = opus.opus_encoder_create(16000, 1, OPUS_APPLICATION_VOIP, ctypes.byref(err))
     if err.value != 0 or not enc:
@@ -1146,11 +1326,16 @@ def encoder_loop(args, opus, muted, out, lock, mic, guard=None):
         source = mic.frames()
 
     sent = 0
-    for pcm in source:
+    state = Path(os.environ["ZCALL_LOG_DIR"]) / "mic-leveler.json" if os.environ.get("ZCALL_LOG_DIR") else None
+    leveler = MicLeveler(far_active, state) if not args.tone and os.environ.get("ZCALL_MIC_GAIN") != "0" else None
+    for raw in source:
+        # The clip guard sees the microphone as it comes (its own clipping);
+        # the leveler's gain goes to the encoder and the dump.
+        if guard and not muted.is_set():
+            guard.feed(raw)
+        pcm = leveler.process(raw) if leveler else raw
         frame = silence if muted.is_set() else pcm
         DUMP.write("mic", frame)
-        if guard and frame is pcm:
-            guard.feed(pcm)
         size = opus.opus_encode(enc, frame, FRAME, buf, len(buf))
         if size <= 0:
             continue
@@ -1214,8 +1399,10 @@ def main():
     # --no-aec skips the module entirely: PipeWire 1.4's plugin cannot turn the
     # canceller off while keeping the noise suppressor.
     want_proc = pulse and os.environ.get("ZCALL_AUDIO_PROCESSING", "1") != "0" and not args.no_aec
-    proc = Processing(high_pass=not args.no_high_pass, noise_suppression=not args.no_ns, voice_detection=args.vad) if want_proc else None
-    log(f"audio config: aec {not args.no_aec} ns {not args.no_ns} high-pass {not args.no_high_pass} vad {args.vad} delay {args.min_delay}..{args.max_delay or args.jitter * 20} ms")
+    # Noise suppression only on request (see the top of this file).
+    ns_on = not args.no_ns and os.environ.get("ZCALL_NOISE_SUPPRESSION") == "1"
+    proc = Processing(high_pass=not args.no_high_pass, noise_suppression=ns_on, voice_detection=args.vad) if want_proc else None
+    log(f"audio config: aec {not args.no_aec} ns {ns_on} high-pass {not args.no_high_pass} vad {args.vad} delay {args.min_delay}..{args.max_delay or args.jitter * 20} ms")
 
     def start_processing() -> bool:
         return proc.start(chosen["mic"] or pulse_mic(), chosen["speaker"]) if proc else False
@@ -1247,7 +1434,7 @@ def main():
         if pulse and mic:
             guard = ClipGuard(chosen["mic"] or pulse_mic() or default_source())
             mic.guard = guard
-        threading.Thread(target=encoder_loop, args=(args, opus, muted, out, lock, mic, getattr(mic, "guard", None)), daemon=True).start()
+        threading.Thread(target=encoder_loop, args=(args, opus, muted, out, lock, mic, getattr(mic, "guard", None), jitter.far_active), daemon=True).start()
     if pulse and os.environ.get("ZCALL_AUDIO_DIAG", "1") != "0":
         Diag(jitter, mic, proc.tag if proc else "zcall_ec_")
 
