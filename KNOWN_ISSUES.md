@@ -15,6 +15,11 @@ This document tracks current limitations and historical issues that have been ad
 
 ## ✅ Resolved Issues & Workarounds
 
+- **Calls (voice, video, screen sharing, group calls):**
+  - **Issue:** Calls could not be made or received on Linux. The Wine wrapper of [PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62) (thanks @collyn) made them partly work, through Wine, `ZaloCall.exe` and 32-bit libraries.
+  - **Solution:** Voice and video calls, screen sharing and group calls (audio, camera, screen share) run on a native Linux call engine ([`zcall-native/`](./zcall-native/README.md), from [zalo-linux-native](https://github.com/nct88/zalo-linux-native)), in a call window laid out as Zalo for macOS with its own icons and sounds (taken from the macOS DMG at build time), and incoming calls show a notice in the screen's corner: no Wine, no `ZaloCall.exe`, no 32-bit libraries. Calls need `python3`, libopus and the PulseAudio tools (Debian / Ubuntu: `sudo apt install python3 libopus0 pulseaudio-utils`); the first call says what is missing. Switching a voice call to video during the call is not possible, as with Zalo for macOS and Windows (phone to phone only).
+  - **Credits:** Thanks to [@nct88](https://github.com/nct88). See [PR #128](https://github.com/VN-Linux-Family/zalo-for-linux/pull/128), [PR #129](https://github.com/VN-Linux-Family/zalo-for-linux/pull/129), [PR #135](https://github.com/VN-Linux-Family/zalo-for-linux/pull/135), [PR #136](https://github.com/VN-Linux-Family/zalo-for-linux/pull/136) and [PR #137](https://github.com/VN-Linux-Family/zalo-for-linux/pull/137).
+
 - **System/Auto Theme not working:** 
   - **Issue:** The app does not follow the system's dark/light mode. Both ZaDark and Zalo ignore `prefers-color-scheme`. 
   - **Solution:** The app now can do real-time detection via GNOME D-Bus (org.gnome.desktop.interface color-scheme), XDG Desktop Portal (org.freedesktop.appearane), or gtk-theme. Automatically synchronizes `nativeTheme.themeSource` and the `.dark` class in DOM without interfering with or altering the operating system's default title bar.
