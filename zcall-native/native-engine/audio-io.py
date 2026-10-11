@@ -182,10 +182,25 @@ class Mic:
             old.kill()
             old.wait()
 
+    def close(self):
+        """End the capture before we exit. Left running, parec wrote into the
+        closed pipe and printed "write() failed: Broken pipe" at every hangup
+        (3 of 3 calls, 2026-10-11)."""
+        proc, self.proc = self.proc, None
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
     def frames(self):
         last = None
         while True:
             proc = self.proc
+            if proc is None:
+                return  # closed
             pcm = read_exact(proc.stdout, FRAME_BYTES)
             now = time.monotonic()
             if last is not None and pcm is not None:
@@ -1259,6 +1274,9 @@ def main():
                 log("bad frame kind", kind)
                 break
     finally:
+        # The capture first: it reads from the processing's source.
+        if mic:
+            mic.close()
         jitter.flush()
         sink.close()
         if proc:
