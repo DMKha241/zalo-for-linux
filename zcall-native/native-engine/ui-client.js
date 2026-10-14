@@ -15,7 +15,7 @@
 //                 {action:"screen", on}               our screen replaces the camera
 //                 {action:"log", text}                a line for the engine log
 //                 {action:"tile", src, width}        group: a member's tile is this wide (pixels)
-//                 {action:"needkey", why}            the decoder broke: PLI to the phone
+//                 {action:"needkey", why, src?}     decoder broke or its queue filled: PLI to that sender
 
 const net = require('net');
 const { CallWindow } = require('./call-window');
@@ -129,10 +129,15 @@ class ElectronCallUi {
     this._send({ type: 'speaking', src, on: !!on });
   }
 
-  // One received video frame (H.264 Annex-B): the window decodes and shows it.
-  // src: the member (group calls, one tile each); absent in 1-1 calls.
+  // One received video frame (H.264 Annex-B). The line names the length and the
+  // next bin bytes are the frame, so a 720p key frame is not base64 on the
+  // renderer thread. src is the member in a group call and is omitted in 1-1.
+  // The window still accepts an old message that carries base64 in data.
   video({ key, codec, data, src }) {
-    this._send({ type: 'video', key, codec, data: data.toString('base64'), src });
+    if (this.fallback || !this.sock || this.sock.destroyed) return;
+    const payload = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const head = Buffer.from(JSON.stringify({ type: 'video', key: !!key, codec, src, bin: payload.length }) + '\n');
+    try { this.sock.write(Buffer.concat([head, payload])); } catch (_) {}
   }
 
   close(text) {
@@ -192,8 +197,8 @@ class ElectronCallUi {
       case 'tile': // group: the window drew the tile of member src at this many pixels wide
         if (this.cb.tile) this.cb.tile(Number(m.src) >>> 0, Number(m.width) || 0);
         return;
-      case 'needkey': // the window's decoder gave up: ask the phone for a key frame
-        if (this.cb.needKey) this.cb.needKey(String(m.why || 'decoder').slice(0, 40));
+      case 'needkey': // the window's decoder gave up, or its queue is full: PLI to that sender
+        if (this.cb.needKey) this.cb.needKey(String(m.why || 'decoder').slice(0, 40), m.src);
         return;
       case 'log':
         this.log('window:', String(m.text || '').slice(0, 300));

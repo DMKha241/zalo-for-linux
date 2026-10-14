@@ -59,7 +59,7 @@ const {
 const { masterFromSessId, sessionKeys, parseRtp, unprotectRtp, protectRtp } = require('../srtp-aes');
 const { FRAME_SAMPLES, buildAudioRtpHeader, buildGroupAudioRtpHeader, buildGroupVideoRtpHeader } = require('../rtp');
 const { packetizeFrame, KEY_PT, DELTA_PT } = require('../video');
-const { RtcpFeedback } = require('../rtcp');
+const { RtcpFeedback, buildPli, buildNack, NackTracker } = require('../rtcp');
 const { SendRate } = require('../send-rate');
 
 // Timings of the real engine (captures 2026-09-29).
@@ -167,6 +167,8 @@ class ZrtcMediaBackend extends EventEmitter {
     this.aTxWin = { n: 0, last: 0, maxGap: 0, gaps40: 0, gaps60: 0, since: Date.now() }; // audio send timing, 10 s log line
     this.audioOctets = 0;
     this.lastPliAt = 0;
+    this.pliAt = new Map(); // one PLI a second per sender; 1-1 with no src uses lastPliAt
+    this.nack = null; // NackTracker while rtcp is on
     this.rtcpLoggedAt = 0;
     this.vidWanted = new Set(); // group members we asked the SFU to send video for
     this.renderWidth = new Map(); // group: member UID -> width of its tile in pixels, from the window
@@ -235,6 +237,7 @@ class ZrtcMediaBackend extends EventEmitter {
     const groupRtcp = !this.group || process.env.ZCALL_GROUP_RTCP !== '0';
     this.rtcp = groupRtcp && process.env.ZCALL_RTCP !== '0' && this.params.localUid
       ? new RtcpFeedback({ localSsrc: this.params.localUid >>> 0 }) : null;
+    this.nack = this.rtcp ? new NackTracker() : null;
     if (this.group && this.rtcp) this.log('media: group transport-cc feedback on (ZCALL_GROUP_RTCP=0 turns it off)');
     // After the counter reset: sub 12 is empty when groupcall has no layers.
     this.videoPlan = this.group ? groupVideoPlan(this.params.config) : null;
@@ -977,7 +980,7 @@ class ZrtcMediaBackend extends EventEmitter {
       // and a group call has one per member.
       if (now - this.rtcpLoggedAt >= RTCP_LOG_MS) {
         this.rtcpLoggedAt = now;
-        this.log(`rtcp: group, sent twcc ${this.rtcp.counters.twcc} (media ssrc ${this.rtcp.peerSsrc}), ${this.rtcp.twcc.top === null ? 'no' : 'seen'} transport-cc numbers from the SFU`);
+        this.log(`rtcp: group, sent twcc ${this.rtcp.counters.twcc}, nack ${this.rtcp.counters.nack}, pli ${this.rtcp.counters.pli} (media ssrc ${this.rtcp.peerSsrc}), ${this.rtcp.twcc.top === null ? 'no' : 'seen'} transport-cc numbers from the SFU`);
       }
       return;
     }
@@ -988,21 +991,26 @@ class ZrtcMediaBackend extends EventEmitter {
       this.rtcpLoggedAt = now;
       const c = this.rtcp.counters;
       const b = this.rtcp.video.started ? this.rtcp.video.block(now) : null;
-      this.log(`rtcp: sent twcc ${c.twcc}, reports ${c.reports}, pli ${c.pli}` + (b ? `; video from phone: ${this.rtcp.video.received} pkts, lost ${b.cumLost}, jitter ${b.jitter}` : ''));
+      this.log(`rtcp: sent twcc ${c.twcc}, reports ${c.reports}, pli ${c.pli}, nack ${c.nack}` + (b ? `; video from phone: ${this.rtcp.video.received} pkts, lost ${b.cumLost}, jitter ${b.jitter}` : ''));
     }
   }
 
-  // Ask the phone for a key frame (the picture broke: a hole in the stream, or the
-  // decoder gave up). PLI on the video RTCP channel, at most once a second.
-  requestPeerKeyFrame(why) {
+  // Ask one sender for a key frame (a hole, or the decoder gave up). PLI on the
+  // video RTCP channel, at most once a second per sender. mediaSsrc is the member
+  // in a group call; without it, 1-1 uses the SSRC of the first video packet.
+  requestPeerKeyFrame(why, mediaSsrc) {
     if (!this.rtcp) return;
     const now = Date.now();
-    if (now - this.lastPliAt < PLI_MIN_GAP_MS) return;
-    const pli = this.rtcp.pli();
+    const n = Number(mediaSsrc);
+    const key = Number.isFinite(n) && n > 0 ? (n >>> 0) : 0;
+    const stamp = key ? (this.pliAt.get(key) || 0) : this.lastPliAt;
+    if (now - stamp < PLI_MIN_GAP_MS) return;
+    const pli = key ? buildPli(this.rtcp.localSsrc, key) : this.rtcp.pli();
     if (!pli) return;
-    this.lastPliAt = now;
+    if (key) { this.pliAt.set(key, now); this.rtcp.counters.pli++; }
+    else this.lastPliAt = now;
     this._sendRtcp(true, pli);
-    this.log('rtcp: PLI to the phone (' + why + ')');
+    this.log('rtcp: PLI to ' + (key || 'the phone') + ' (' + why + ')');
   }
 
   _initSocket() {
@@ -1242,6 +1250,12 @@ class ZrtcMediaBackend extends EventEmitter {
     tracker.update(seq, roc);
     this.lastRxAt = Date.now();
     if (this.rtcp) this.rtcp.onRtp('video', rtp, this.lastRxAt);
+    if (this.nack && this.rtcp) {
+      for (const item of this.nack.note(got.ssrc, seq, this.lastRxAt)) {
+        this._sendRtcp(true, buildNack(this.rtcp.localSsrc, item.ssrc, item.seqs));
+        this.rtcp.counters.nack++;
+      }
+    }
     if (this.group) {
       // What the group packetization looks like (not captured before):
       // PTs and the first payload bytes, per member.

@@ -108,7 +108,7 @@ class EngineCore {
     if (typeof this.ui.onCamera === 'function') this.ui.onCamera((on) => this._camMic(on));
     if (typeof this.ui.onScreen === 'function') this.ui.onScreen((on) => this._screenShare(on));
     if (typeof this.ui.onTile === 'function') this.ui.onTile((src, width) => { if (this.call && this.call.group && this.media.setMemberRenderWidth) this.media.setMemberRenderWidth(src, width); });
-    if (typeof this.ui.onNeedKey === 'function') this.ui.onNeedKey((why) => this._askPeerKey('window ' + why));
+    if (typeof this.ui.onNeedKey === 'function') this.ui.onNeedKey((why, src) => this._askPeerKey('window ' + why, src));
     if (typeof media.on === 'function') {
       media.on('timeout', () => this.hangup('media-timeout'));
       media.on('failed', (why) => this.hangup(`media-${why}`));
@@ -466,12 +466,13 @@ class EngineCore {
     this.ui.requestKeyFrame();
   }
 
-  // The picture from the phone is damaged (a hole in the stream, a decoder error):
-  // ask it for a key frame (RTCP PLI; the backend limits this to one a second).
-  _askPeerKey(why) {
+  // The picture is damaged (a hole, or the decoder gave up): ask that sender
+  // for a key frame. src is the member in a group call; a 1-1 call omits it.
+  // The backend sends at most one PLI a second for each sender.
+  _askPeerKey(why, src) {
     const c = this.call;
-    if (!c || c.state !== 'connected' || c.group || typeof this.media.requestPeerKeyFrame !== 'function') return;
-    this.media.requestPeerKeyFrame(why);
+    if (!c || c.state !== 'connected' || typeof this.media.requestPeerKeyFrame !== 'function') return;
+    this.media.requestPeerKeyFrame(why, src);
   }
 
   // A line in the log every 5 s of video: frames handed to the window per second, key frames,
@@ -515,13 +516,14 @@ class EngineCore {
       let v = c.videos.get(pkt.ssrc);
       if (!v) {
         v = { codec: null, since: 0, frames: 0, noCodec: 0 };
+        const ssrc = pkt.ssrc;
         v.asm = new VideoAssembler((f) => {
           if (f.key) v.codec = avcCodecString(f.data) || v.codec;
           if (!v.codec) { v.noCodec++; return; }
-          this._noteMemberRx(v, pkt.ssrc);
-          this.ui.video({ key: f.key, codec: v.codec, data: f.data, src: pkt.ssrc });
-        }, undefined, { group: true });
-        c.videos.set(pkt.ssrc, v);
+          this._noteMemberRx(v, ssrc);
+          this.ui.video({ key: f.key, codec: v.codec, data: f.data, src: ssrc });
+        }, undefined, { group: true, onGap: () => this._askPeerKey('gap', ssrc) });
+        c.videos.set(ssrc, v);
       }
       v.asm.push(pkt);
       return;
