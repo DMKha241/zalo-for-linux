@@ -8,11 +8,13 @@
  * icons, sounds and fonts from app/zcall-assets/). An incoming call shows
  * the notice of incoming.js (ui/incoming.*) first. The socket is passed to
  * the engine in ZCALL_UI_PORT / ZCALL_UI_TOKEN (inherited through the spawn);
- * the engine's first line is the token. Then one JSON object per line:
+ * the engine's first line is the token. Then one JSON object per line.
+ * A video frame is the line below with bin set, then exactly that many raw
+ * Annex-B bytes (an older engine may still send base64 in data).
  *
  *   engine -> ui  {type:"state", phase, name, avatar, text, since, video, muted,
  *                  speakerOff, peerCamOff, peerMuted, peerSharing, cameraEncode?}
- *                 {type:"video", key, codec, data}   one received H.264 frame (Annex-B, base64)
+ *                 {type:"video", key, codec, src, bin}   then bin raw H.264 bytes
  *                 {type:"keyframe"}                  the phone needs a key frame
  *                 {type:"close", text}
  *   ui -> engine  {action:"hangup"|"accept"|"reject"|"mute"|"speaker"|"camera", on?}
@@ -341,29 +343,58 @@ function onEngineMessage(m) {
   }
 }
 
+// Control lines are JSON. A video frame is {type:'video', bin:N} plus the
+// next N bytes, which stay binary (setEncoding would turn them into text).
+function readEngineMessages(state, chunk, token) {
+  const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  state.buf = state.buf.length ? Buffer.concat([state.buf, piece]) : piece;
+  const messages = [];
+  let authed = false;
+  for (;;) {
+    if (state.pending) {
+      if (state.buf.length < state.pending.bin) break;
+      const n = state.pending.bin;
+      const m = state.pending;
+      m.data = Buffer.from(state.buf.subarray(0, n));
+      delete m.bin;
+      state.buf = state.buf.subarray(n);
+      state.pending = null;
+      messages.push(m);
+      continue;
+    }
+    const i = state.buf.indexOf(0x0a);
+    if (i < 0) break;
+    const line = state.buf.subarray(0, i).toString('utf8');
+    state.buf = state.buf.subarray(i + 1);
+    if (!state.authed) {
+      if (line !== token) return { messages, authed, fatal: true };
+      state.authed = true;
+      authed = true;
+      continue;
+    }
+    let m;
+    try { m = JSON.parse(line); } catch (_) { continue; }
+    if (m && m.type === 'video' && Number.isInteger(m.bin) && m.bin > 0 && m.bin <= 8 * 1024 * 1024) {
+      state.pending = m;
+      continue;
+    }
+    messages.push(m);
+  }
+  return { messages, authed, fatal: false };
+}
+
 function onConnection(sock) {
   const token = process.env.ZCALL_UI_TOKEN;
-  let authed = false;
-  let buf = '';
-  sock.setEncoding('utf8');
+  const state = { buf: Buffer.alloc(0), pending: null, authed: false };
   sock.on('data', (d) => {
-    buf += d;
-    let i;
-    while ((i = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, i);
-      buf = buf.slice(i + 1);
-      if (!authed) {
-        if (line !== token) { sock.destroy(); return; }
-        authed = true;
-        if (client && client !== sock) client.destroy(); // engine restarted
-        client = sock;
-        sendDevicePrefs();
-        continue;
-      }
-      let m;
-      try { m = JSON.parse(line); } catch (_) { continue; }
-      onEngineMessage(m);
+    const r = readEngineMessages(state, d, token);
+    if (r.fatal) { sock.destroy(); return; }
+    if (r.authed) {
+      if (client && client !== sock) client.destroy(); // engine restarted
+      client = sock;
+      sendDevicePrefs();
     }
+    for (const m of r.messages) onEngineMessage(m);
   });
   sock.on('error', () => {});
   sock.on('close', () => {
@@ -441,4 +472,4 @@ function stop() {
   server = null;
 }
 
-module.exports = { start, stop };
+module.exports = { start, stop, readEngineMessages };

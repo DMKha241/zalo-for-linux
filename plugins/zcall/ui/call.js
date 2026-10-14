@@ -501,7 +501,8 @@ let decErrLogged = false, shown = 0, shownSince = 0, shownTotal = 0, rxBytes = 0
 const tiles = new Map();
 // 1-1: the decoder broke (or a decode call threw): say so, and ask the phone for a key frame
 // (the engine sends the PLI), instead of staying on the last picture until the next one.
-function decoderBroke(why) {
+function decoderBroke(why, failed) {
+  if (failed && failed !== dec) return;
   dec = null;
   if (!decErrLogged) { decErrLogged = true; act('log', { text: 'video decode: ' + why }); }
   act('needkey', { why: 'decoder' });
@@ -520,16 +521,25 @@ function stopVideo() {
   placeSelf();
   $('stage').textContent = '';
 }
+const DECODE_QUEUE_MAX = 3; // past this, another delta only makes the smear later
+function frameBytes(m) {
+  const d = m && m.data;
+  if (d && typeof d !== 'string') return d.byteLength || d.length || 0;
+  return Math.floor(String(d || '').length * 3 / 4);
+}
 function annexB(m) {
-  const bin = atob(m.data); const data = new Uint8Array(bin.length);
+  const d = m && m.data;
+  if (d && typeof d !== 'string') return d instanceof Uint8Array ? d : new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+  const bin = atob(d || ''); const data = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
   return data;
 }
 function newDecoder(codec) {
   if (dec && dec.state !== 'closed') try { dec.close(); } catch (_) {}
   decCodec = codec;
-  dec = new VideoDecoder({
+  const mine = new VideoDecoder({
     output: (f) => {
+      if (dec !== mine) { f.close(); return; }
       if (canvas.width !== f.displayWidth || canvas.height !== f.displayHeight) {
         canvas.width = f.displayWidth; canvas.height = f.displayHeight;
         act('log', { text: 'video ' + f.displayWidth + 'x' + f.displayHeight });
@@ -545,8 +555,9 @@ function newDecoder(codec) {
       f.close();
       if (!state.peerCamOff) document.body.classList.add('has-video');
     },
-    error: (e) => decoderBroke((e && e.message) || String(e)), // the next key frame restarts it
+    error: (e) => decoderBroke((e && e.message) || String(e), mine), // the next key frame restarts it
   });
+  dec = mine;
   // Software: the hardware path refuses these streams on this Electron.
   dec.configure({ codec, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
 }
@@ -573,12 +584,19 @@ function showMember(m) {
     document.body.classList.add('has-video', 'has-tiles');
     placeSelf();
   }
+  t.rxBytes = (t.rxBytes || 0) + frameBytes(m);
+  if (t.dec && t.dec.state === 'configured' && t.dec.decodeQueueSize >= DECODE_QUEUE_MAX) {
+    if (!m.key) { act('needkey', { why: 'queue', src: m.src }); return; }
+    try { t.dec.close(); } catch (_) {}
+    t.dec = null;
+  }
   if (m.key && (!t.dec || t.dec.state === 'closed' || m.codec !== t.codec)) {
     if (t.dec && t.dec.state !== 'closed') try { t.dec.close(); } catch (_) {}
     t.codec = m.codec;
     const src = m.src;
-    t.dec = new VideoDecoder({
+    const mine = new VideoDecoder({
       output: (f) => {
+        if (t.dec !== mine) { f.close(); return; }
         if (t.canvas.width !== f.displayWidth || t.canvas.height !== f.displayHeight) {
           t.canvas.width = f.displayWidth; t.canvas.height = f.displayHeight;
           act('log', { text: 'video ' + src + ' ' + f.displayWidth + 'x' + f.displayHeight + ' (tile ' + t.sentW + ' px)' });
@@ -588,34 +606,42 @@ function showMember(m) {
         if (!t.shownSince) t.shownSince = now;
         if (now - t.shownSince >= 5000) {
           act('log', { text: 'video shown ' + src + ' ' + (t.shown * 1000 / (now - t.shownSince)).toFixed(1) + ' fps, ' + f.displayWidth + 'x' + f.displayHeight +
-            ', ' + Math.round((t.rxBytes || 0) * 8 / ((now - t.shownSince) / 1000) / 1000) + ' kbps in, tile ' + t.sentW + ' px' });
+            ', ' + Math.round((t.rxBytes || 0) * 8 / ((now - t.shownSince) / 1000) / 1000) + ' kbps in, decode queue ' + (t.dec ? t.dec.decodeQueueSize : '-') + ', tile ' + t.sentW + ' px' });
           t.shown = 0; t.shownSince = now; t.rxBytes = 0;
         }
         f.close();
         document.body.classList.add('has-video', 'has-tiles');
       },
       error: (e) => {
+        if (t.dec !== mine) return;
         t.dec = null;
         if (!t.errLogged) { t.errLogged = true; act('log', { text: 'video decode ' + src + ': ' + (e && e.message ? e.message : e) }); }
+        act('needkey', { why: 'decoder', src });
       },
     });
+    t.dec = mine;
     t.dec.configure({ codec: m.codec, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
   }
-  t.rxBytes = (t.rxBytes || 0) + Math.floor(m.data.length * 3 / 4);
   if (!t.dec || t.dec.state !== 'configured') return;
   try { t.dec.decode(new EncodedVideoChunk({ type: m.key ? 'key' : 'delta', timestamp: t.ts += 66666, data: annexB(m) })); }
   catch (e) {
     t.dec = null;
     if (!t.errLogged) { t.errLogged = true; act('log', { text: 'video decode ' + m.src + ': ' + (e && e.message ? e.message : e) }); }
+    act('needkey', { why: 'decoder', src: m.src });
   }
 }
 ipcRenderer.on('zcall-ui-video', (_e, m) => {
   if (state.phase !== 'connected') return;
   if (m.src) { showMember(m); return; }
-  rxBytes += Math.floor(m.data.length * 3 / 4);
+  rxBytes += frameBytes(m);
+  if (dec && dec.state === 'configured' && dec.decodeQueueSize >= DECODE_QUEUE_MAX) {
+    if (!m.key) { act('needkey', { why: 'queue' }); return; }
+    try { dec.close(); } catch (_) {}
+    dec = null;
+  }
   if (m.key && (!dec || dec.state === 'closed' || m.codec !== decCodec)) newDecoder(m.codec);
   if (!dec || dec.state !== 'configured') return;
-  try { dec.decode(new EncodedVideoChunk({ type: m.key ? 'key' : 'delta', timestamp: ts += 66666, data: annexB(m) })); } catch (e) { decoderBroke((e && e.message) || String(e)); }
+  try { dec.decode(new EncodedVideoChunk({ type: m.key ? 'key' : 'delta', timestamp: ts += 66666, data: annexB(m) })); } catch (e) { decoderBroke((e && e.message) || String(e), dec); }
 });
 ipcRenderer.on('zcall-ui-keyframe', () => { forceKey = true; });
 

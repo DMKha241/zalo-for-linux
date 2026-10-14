@@ -240,6 +240,70 @@ function buildNack(senderSsrc, mediaSsrc, seqs) {
   return b;
 }
 
+// Lost video packets, per sender. A hole of at most 64 sequence numbers is
+// asked for at once, then every 40 ms, five times, and forgotten after 400 ms
+// (the assembler waits 200 ms, so a later repair is already too late). A jump
+// larger than that is a seek: the caller asks for a key frame instead of a
+// burst of NACKs. Sequence numbers are uint16. A packet more than half the
+// space behind the highest is old and never moves the highest backward.
+const NACK_MAX_HOLE = 64;
+const NACK_RETRY_MS = 40;
+const NACK_MAX_TRIES = 5;
+const NACK_DROP_MS = 400;
+const NACK_KEEP = 128;
+
+class NackTracker {
+  constructor() {
+    this.streams = new Map();
+  }
+
+  // One received RTP sequence (uint16). Returns [{ ssrc, seqs }] to send now.
+  note(ssrc, seq, now) {
+    ssrc >>>= 0;
+    seq &= 0xffff;
+    let st = this.streams.get(ssrc);
+    if (!st) {
+      this.streams.set(ssrc, { highest: seq, miss: new Map() });
+      return [];
+    }
+    const ahead = (seq - st.highest) & 0xffff;
+    if (ahead === 0) return this._due(st, ssrc, now);
+    if (ahead >= 0x8000) {
+      st.miss.delete(seq);
+      return this._due(st, ssrc, now);
+    }
+    if (ahead > NACK_MAX_HOLE) {
+      st.highest = seq;
+      st.miss.clear();
+      return [];
+    }
+    for (let d = 1; d < ahead; d++) {
+      const missing = (st.highest + d) & 0xffff;
+      if (!st.miss.has(missing)) st.miss.set(missing, { at: now, tries: 0 });
+    }
+    st.highest = seq;
+    st.miss.delete(seq);
+    while (st.miss.size > NACK_KEEP) st.miss.delete(st.miss.keys().next().value);
+    return this._due(st, ssrc, now);
+  }
+
+  _due(st, ssrc, now) {
+    const seqs = [];
+    for (const [seq, info] of [...st.miss]) {
+      if (now - info.at > NACK_DROP_MS) { st.miss.delete(seq); continue; }
+      if (info.tries >= NACK_MAX_TRIES) continue;
+      if (now < info.at + info.tries * NACK_RETRY_MS) continue;
+      info.tries++;
+      seqs.push(seq);
+    }
+    if (!seqs.length) return [];
+    const high = st.highest & 0xffff;
+    // Oldest first, so 65535 then 0 stays one NACK item across the wrap.
+    seqs.sort((a, b) => ((high - b) & 0xffff) - ((high - a) & 0xffff));
+    return [{ ssrc, seqs }];
+  }
+}
+
 // --- reception statistics (RFC 3550 A.1 / A.3 / 6.4.1) ---------------------------
 
 class RxStats {
@@ -367,5 +431,5 @@ class RtcpFeedback {
 
 module.exports = {
   TWCC_EXT_ID, readTwSeq, TwccRecorder, encodeTwcc, parseTwcc, ntpNow,
-  buildSr, buildRr, buildSdes, buildPli, buildNack, RxStats, RtcpFeedback,
+  buildSr, buildRr, buildSdes, buildPli, buildNack, NackTracker, RxStats, RtcpFeedback,
 };
