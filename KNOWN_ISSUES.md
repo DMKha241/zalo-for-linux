@@ -11,6 +11,9 @@ This document tracks current limitations and historical issues that have been ad
 - **Partly-fixed: Audio/Video Calling on ARM64:** 
   Audio/video calling is supported on x86_64 via Wine TCP-to-named-pipe translation (`zcall-bridge`). However, calls are currently **not available on aarch64 (ARM64)** because the official Windows `ZaloCall.exe` and helper native binaries only support 32-bit/64-bit x86. See [PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62) and [Issue #70](https://github.com/VN-Linux-Family/zalo-for-linux/issues/70).
 
+- **Ubuntu-only: Zalo fails to start on Ubuntu 23.10 and onwards without `--no-sandbox` flag:** 
+  Ubuntu has restricted unprivileged user namespaces since version 23.10, and every app needs a profile to access them. The restriction breaks `chrome-sandbox` without making it owned by `root` and has mode `4755` or having an AppArmor profile.
+  Please add `--no-sandbox` to Zalo's `.desktop` files, or disable the restriction by following [iVAN's AM Troubleshooting guide, "Ubuntu mess" section](https://github.com/ivan-hc/AM/blob/main/docs/troubleshooting.md#ubuntu-mess). See [Issue #72](https://github.com/VN-Linux-Family/zalo-for-linux/issues/72) and [Issue #143](https://github.com/VN-Linux-Family/zalo-for-linux/issues/143).
 ---
 
 ## ✅ Resolved Issues & Workarounds
