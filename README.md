@@ -12,6 +12,8 @@ Thanks **realdtn2** for the solution: [realdtn2/zalo-linux-2026](https://github.
 
 - **➖ Partly-fixed: Can't make or receive calls:** Thanks to @collyn for setting up a Wine wrapper to solve this. See [PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62) for more info, but currently calling is not available on aarch64, because Windows `zcall` only supports x86_64.
 
+- **➖ Ubuntu-only: Zalo fails to start on Ubuntu 23.10 and onwards without `--no-sandbox` flag:** Ubuntu has restricted unprivileged user namespaces since Ubuntu 23.10, and every app needs a profile to access them. The restriction breaks `chrome-sandbox` without making it owned by `root` and has mode `4755` or having an AppArmor profile, so please add `--no-sandbox` to Zalo's `.desktop` files, or disable the restriction by following [iVAN's AM Troubleshooting guide, "Ubuntu mess" section](https://github.com/ivan-hc/AM/blob/main/docs/troubleshooting.md#ubuntu-mess). See [Issue #72](https://github.com/VN-Linux-Family/zalo-for-linux/issues/72) and [Issue #143](https://github.com/VN-Linux-Family/zalo-for-linux/issues/143) for more info.
+
 > 💡 **For the full list of resolved issues, workarounds, and community credits, see [KNOWN_ISSUES.md](./KNOWN_ISSUES.md).**
 
 This project is best suited for users who need a native-feeling Zalo client on Linux and are comfortable with the technical workarounds required for full functionality.
