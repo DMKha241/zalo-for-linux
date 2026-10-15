@@ -18,7 +18,11 @@ const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
 const PACKAGE_JSON = require(path.join(__dirname, '..', 'package.json'));
 const ELECTRON_VERSION = PACKAGE_JSON.devDependencies.electron.replace(/^\^/, '');
 
-const libDir = process.argv[2];
+const repoRoot = path.resolve(__dirname, '..');
+const libDir = path.resolve(repoRoot, process.argv[2] || '');
+if (libDir !== repoRoot && !libDir.startsWith(repoRoot + path.sep)) {
+  throw new Error(`Lib dir must be inside the repository: ${libDir}`);
+}
 const buildDir = path.join(libDir, 'build');
 const releaseBinary = path.join(buildDir, 'Release');
 
