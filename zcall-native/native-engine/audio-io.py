@@ -212,17 +212,25 @@ def switch_speaker(sink, name: str | None):
 # this Debian 13 the portal fails ("Realtime error: Could not get pidns for pid
 # ...: Not a directory"), so the threads stayed at normal priority. RTKit
 # directly (rtportal.enabled = false) gives data-loop.0 RR 20.
-# The graph period stays the one module-echo-cancel asks for (10 ms -> quantum
-# 256): at 512 its sink path broke the sound every 10 ms (1 kHz played as
-# 964.8 Hz, THD+N -3 dB instead of -40 dB, measured on the USB headset
-# 2026-10-09), whatever node.latency or audio.rate was given.
+# The graph period stays 256 samples. A machine whose USB headset drives
+# PipeWire at quantum 1024 (Dell OptiPlex 9020, 2026-10-10) runs the canceller
+# on that period; node.force-quantum on these nodes locks the graph at 256
+# while they are active and lets it go when the call ends. Quantum 512 broke
+# the sink every 10 ms (1 kHz played as 964.8 Hz, THD+N -3 dB instead of
+# -40 dB, USB headset 2026-10-09), so nothing here sets 512.
 # delay_agnostic is set false for the old WebRTC AEC2 plugin, which hunts the
 # delay during doubletalk and rasps. PipeWire 1.4's AEC3 build ignores it and
 # aligns playback with capture itself; do not also set buffer.play_delay.
 # voice_detection and transient_suppression default on in that build and are
 # what gates and rasps the near end while the far end talks. Zalo's desktop
 # path does not enable either.
-EC_CONF = """context.properties = { log.level = 0 }
+EC_CONF = """context.properties = {
+    log.level = 0
+    default.clock.rate = 48000
+    default.clock.quantum = 256
+    default.clock.min-quantum = 256
+    default.clock.max-quantum = 256
+}
 context.spa-libs = {
     audio.convert.* = audioconvert/libspa-audioconvert
     support.*       = support/libspa-support
@@ -247,10 +255,10 @@ context.modules = [
         audio.rate = 16000
         audio.channels = 1
         audio.position = [ MONO ]
-        capture.props  = { node.name = "@TAG@.capture" node.passive = true @MIC@ }
-        source.props   = { node.name = "@TAG@_source" node.description = "Zalo call microphone (processed)" priority.session = 0 priority.driver = 0 }
-        sink.props     = { node.name = "@TAG@_sink" node.description = "Zalo call speaker (processed)" priority.session = 0 priority.driver = 0 }
-        playback.props = { node.name = "@TAG@.playback" node.passive = true @SPEAKER@ }
+        capture.props  = { node.name = "@TAG@.capture" node.passive = true node.force-quantum = 256 @MIC@ }
+        source.props   = { node.name = "@TAG@_source" node.description = "Zalo call microphone (processed)" node.force-quantum = 256 priority.session = 0 priority.driver = 0 }
+        sink.props     = { node.name = "@TAG@_sink" node.description = "Zalo call speaker (processed)" node.force-quantum = 256 priority.session = 0 priority.driver = 0 }
+        playback.props = { node.name = "@TAG@.playback" node.passive = true node.force-quantum = 256 @SPEAKER@ }
       }
     }
 ]
@@ -380,7 +388,7 @@ class Processing:
             if self.proc.poll() is not None:
                 break
             if self.source in pulse_names("sources") and self.sink in pulse_names("sinks"):
-                log(f"audio processing on (mic {mic or 'default'}, speaker {speaker or 'default'})")
+                log(f"audio processing on (mic {mic or 'default'}, speaker {speaker or 'default'}, quantum 256)")
                 return True
             time.sleep(0.05)
         log("audio processing did not start; using the devices directly")
@@ -899,21 +907,26 @@ class ClipGuard:
     at its 0 dB maximum clipped hard: 12233 samples at full scale, 563 frames
     over -6 dBFS in a 41 s 1-1 call (dump 2026-10-10); the phone heard it
     distorted, and its own echo canceller then cut its voice (12 of 13 silent
-    holes in what it sent came right after our clipping). Only down, 3 dB a
-    step, at most once per STEP_SEC, never below FLOOR_DB; the level stays for
-    the next calls, as with Zalo on Windows / macOS. ZCALL_MIC_AGC=0: off."""
+    holes in what it sent came right after our clipping). A Jieli headset still
+    peaked at 0 dBFS after two 3 dB steps (Dell, 2026-10-10): while the window
+    still hits full scale the step is 6 dB and may repeat after HOT_STEP_SEC.
+    Otherwise 3 dB, at most once per STEP_SEC. Never below FLOOR_DB. The level
+    stays for the next calls, as with Zalo on Windows / macOS. ZCALL_MIC_AGC=0: off."""
 
     WINDOW = 10          # frames (200 ms) per decision
     CLIP = 31000         # |sample| counted as clipped (after resampling a full-scale flat top)
     MIN_CLIPPED = 16     # clipped samples per window (0.5 %) that trigger a step
     STEP_DB = 3.0
     STEP_SEC = 0.6
+    HOT_STEP_DB = 6.0    # the peak is still full scale: the last step was not enough
+    HOT_STEP_SEC = 0.2
     FLOOR_DB = -24.0
 
     def __init__(self, source: str | None):
         self.source = source
         self.on = bool(source) and os.environ.get("ZCALL_MIC_AGC", "1") != "0" and bool(shutil.which("pactl"))
         self.frames = self.clipped = 0
+        self.win_peak = 0
         self.last_step = 0.0
         self.busy = False
         self.total_clipped = 0  # for the diag line
@@ -940,23 +953,28 @@ class ClipGuard:
         self.clipped += n
         self.total_clipped += n
         if a:
-            self.peak = max(self.peak, max(a), -min(a))
+            peak = max(max(a), -min(a))
+            self.peak = max(self.peak, peak)
+            self.win_peak = max(self.win_peak, peak)
         self.frames += 1
         if self.frames < self.WINDOW:
             return
-        clipped, self.frames, self.clipped = self.clipped, 0, 0
+        clipped, hot = self.clipped, self.win_peak >= self.CLIP
+        self.frames = self.clipped = self.win_peak = 0
         now = time.monotonic()
-        if self.on and not self.busy and clipped >= self.MIN_CLIPPED and now - self.last_step >= self.STEP_SEC:
+        gap = self.HOT_STEP_SEC if hot else self.STEP_SEC
+        if self.on and not self.busy and (hot or clipped >= self.MIN_CLIPPED) and now - self.last_step >= gap:
             self.last_step = now
             self.busy = True
-            threading.Thread(target=self._step, args=(clipped,), daemon=True).start()
+            step = self.HOT_STEP_DB if hot else self.STEP_DB
+            threading.Thread(target=self._step, args=(clipped, step), daemon=True).start()
 
-    def _step(self, clipped):
+    def _step(self, clipped, step):
         try:
             cur = self._db()
             if cur is None or cur <= self.FLOOR_DB + 0.01:
                 return
-            new = max(self.FLOOR_DB, cur - self.STEP_DB)
+            new = max(self.FLOOR_DB, cur - step)
             # Raw volume (PulseAudio's cubic scale: dB = 60 log10(v / 65536)); pactl
             # misreads "-6.0dB" (it set -9 dB, and "-9.0dB" -18 dB, 2026-10-10).
             raw = int(round(65536 * 10 ** (new / 60)))

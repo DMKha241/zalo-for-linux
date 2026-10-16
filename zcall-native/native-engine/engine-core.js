@@ -105,7 +105,7 @@ class EngineCore {
     if (typeof this.ui.onCamera === 'function') this.ui.onCamera((on) => this._camMic(on));
     if (typeof this.ui.onScreen === 'function') this.ui.onScreen((on) => this._screenShare(on));
     if (typeof this.ui.onTile === 'function') this.ui.onTile((src, width) => { if (this.call && this.call.group && this.media.setMemberRenderWidth) this.media.setMemberRenderWidth(src, width); });
-    if (typeof this.ui.onNeedKey === 'function') this.ui.onNeedKey((why) => this._askPeerKey('window ' + why));
+    if (typeof this.ui.onNeedKey === 'function') this.ui.onNeedKey((why, src) => this._askPeerKey('window ' + why, src));
     if (typeof media.on === 'function') {
       media.on('timeout', () => this.hangup('media-timeout'));
       media.on('failed', (why) => this.hangup(`media-${why}`));
@@ -115,6 +115,11 @@ class EngineCore {
       media.on('memberAudio', (uid) => this._groupMemberIn(uid));
       media.on('video', (pkt) => this._onVideoPacket(pkt));
       media.on('keyframe', (why) => this._requestKeyFrame(why));
+      // The rung our camera is encoded at (send-rate.js): the 1-1 ladder, or a
+      // group call's spatial layer after a step down.
+      media.on('sendProfile', (p) => {
+        if (this.call && this.ui.setCameraEncode) this.ui.setCameraEncode(p);
+      });
     }
   }
 
@@ -440,12 +445,13 @@ class EngineCore {
     this.ui.requestKeyFrame();
   }
 
-  // The picture from the phone is damaged (a hole in the stream, a decoder error):
-  // ask it for a key frame (RTCP PLI; the backend limits this to one a second).
-  _askPeerKey(why) {
+  // The picture is damaged (a hole, or the decoder gave up): ask that sender
+  // for a key frame. src is the member in a group call; a 1-1 call omits it.
+  // The backend sends at most one PLI a second for each sender.
+  _askPeerKey(why, src) {
     const c = this.call;
-    if (!c || c.state !== 'connected' || c.group || typeof this.media.requestPeerKeyFrame !== 'function') return;
-    this.media.requestPeerKeyFrame(why);
+    if (!c || c.state !== 'connected' || typeof this.media.requestPeerKeyFrame !== 'function') return;
+    this.media.requestPeerKeyFrame(why, src);
   }
 
   // A line in the log every 5 s of video: frames handed to the window per second, key frames,
@@ -468,7 +474,14 @@ class EngineCore {
     v.frames++;
     if (now - v.since < 5000) return;
     const s = v.asm.stats;
-    this.log(`video rx member ${uid}: ${(v.frames * 1000 / (now - v.since)).toFixed(1)} fps, ${s.frames} frames, ${s.keys} key, ${s.gaps} gaps, ${s.dropped} dropped, ${v.noCodec} without codec`);
+    // NAL bytes of the period by type (14/15/20: SVC units, dropped before decoding)
+    // and the sizes of the last SPS / subset SPS: tells whether a bigger layer
+    // is in the stream as SVC (and thrown away) or not sent at all.
+    const nal = Object.entries(v.asm.nalBytes).map(([t, n]) => `${t}:${Math.round(n / 1024)}k`).join(' ');
+    v.asm.nalBytes = {};
+    const sps = v.asm.spsSize;
+    this.log(`video rx member ${uid}: ${(v.frames * 1000 / (now - v.since)).toFixed(1)} fps, ${s.frames} frames, ${s.keys} key, ${s.gaps} gaps, ${s.dropped} dropped, ${v.noCodec} without codec; ` +
+      `nal ${nal || '-'}; sps ${sps[7] || '-'}, subset sps ${sps[15] || '-'}` + (this.media && this.media.vidAsked ? `; asked quality 0x${(this.media.vidAsked.get(uid >>> 0) ?? 0xff).toString(16)}` : ''));
     v.since = now; v.frames = 0;
   }
 
@@ -482,13 +495,14 @@ class EngineCore {
       let v = c.videos.get(pkt.ssrc);
       if (!v) {
         v = { codec: null, since: 0, frames: 0, noCodec: 0 };
+        const ssrc = pkt.ssrc;
         v.asm = new VideoAssembler((f) => {
           if (f.key) v.codec = avcCodecString(f.data) || v.codec;
           if (!v.codec) { v.noCodec++; return; }
-          this._noteMemberRx(v, pkt.ssrc);
-          this.ui.video({ key: f.key, codec: v.codec, data: f.data, src: pkt.ssrc });
-        }, undefined, { group: true });
-        c.videos.set(pkt.ssrc, v);
+          this._noteMemberRx(v, ssrc);
+          this.ui.video({ key: f.key, codec: v.codec, data: f.data, src: ssrc });
+        }, undefined, { group: true, onGap: () => this._askPeerKey('gap', ssrc) });
+        c.videos.set(ssrc, v);
       }
       v.asm.push(pkt);
       return;

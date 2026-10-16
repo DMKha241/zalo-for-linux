@@ -325,7 +325,8 @@ function groupVideoPlan(config) {
   // Mac asked it for the second (capture 2026-10-08); our 480x240 looked soft next
   // to it. So the second row by default: spatial index ZCALL_GROUP_CAM_LAYER (0, 1, 2).
   const want = process.env.ZCALL_GROUP_CAM_LAYER !== undefined ? Number(process.env.ZCALL_GROUP_CAM_LAYER) : 1;
-  const row = rows[Math.min(Math.max(0, Math.trunc(want) || 0), rows.length - 1)];
+  const start = Math.min(Math.max(0, Math.trunc(want) || 0), rows.length - 1);
+  const row = rows[start];
   encode = { width: row.width, height: row.height, fps: row.fps, bitrate: row.kbps * 1000, keyMs };
   const send = [{ id: 0, a: row.kbps, b: row.width, c: row.height }];
   // fromJson writes this mode at GroupZRtcConfig+0x2f0, which is the CallType
@@ -335,7 +336,7 @@ function groupVideoPlan(config) {
   let sfu = { id: 14, long: true };
   if (codec === 60 || codec === 61) sfu = { id: 12, long: false };
   else if (codec === 4) sfu = null;
-  return { layers, encode, send, sfu };
+  return { layers, encode, send, sfu, rows, start };
 }
 
 // cmd 33, no body. sub 14 MultiSync, sub 15 reference clock. Sent only when
