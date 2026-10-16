@@ -8,8 +8,8 @@ Tài liệu này ghi lại những hạn chế hiện tại và các lỗi trư�
 
 ## ⚠️ Các lỗi và hạn chế hiện tại
 
-- **Đã khắc phục một phần: Gọi thoại/gọi video trên ARM64:** 
-  Tính năng gọi thoại/gọi video đã hoạt động trên x86_64 nhờ cơ chế chuyển đổi TCP sang named pipe qua Wine (`zcall-bridge`). Tuy nhiên, hiện tại **chưa gọi được trên aarch64 (ARM64)**, vì file `ZaloCall.exe` chính thức cho Windows và các file native hỗ trợ đi kèm chỉ chạy trên kiến trúc x86 32-bit/64-bit. Xem [PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62) và [Issue #70](https://github.com/VN-Linux-Family/zalo-for-linux/issues/70).
+- **Gọi điện trên ARM64:** 
+  Gọi điện nay chạy bằng engine native (`zcall-native/`, Node.js + Python, không có phần nào chỉ chạy trên x86) thay cho Wine và `ZaloCall.exe` ([PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62), [Issue #70](https://github.com/VN-Linux-Family/zalo-for-linux/issues/70)), nên aarch64 không còn bị loại trừ, nhưng chưa thử gọi trên aarch64.
 
 - **Chỉ bị ở Ubuntu: Zalo không chạy được trên Ubuntu 23.10 trở đi mà không có cờ `--no-sandbox`:** 
   Ubuntu đã giới hạn không gian tên người dùng không đặc quyền kể từ phiên bản 23.10, và mỗi ứng dụng cần một hồ sơ để truy cập chúng. Việc hạn chế khiến `chrome-sandbox` lỗi nếu không để nó được sở hữu bởi `root` và có chế độ `4755` hoặc có một hồ sơ AppArmor. 
