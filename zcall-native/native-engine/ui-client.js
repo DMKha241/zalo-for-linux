@@ -5,8 +5,9 @@
 // without them (engine run on its own) the zenity window is used instead.
 //
 // Protocol: one JSON object per line.
-//   engine -> ui  {type:"state", phase, name, avatar, text, since, video, muted, speakerOff, peerCamOff, peerMuted, peerSharing, cameraEncode?}
+//   engine -> ui  {type:"state", phase, name, avatar, text, since, video, muted, speakerOff, peerCamOff, peerMuted, peerSharing, cameraEncode?, members?}
 //                 {type:"keyframe"}                    encode the next camera frame as a key frame
+//                 {type:"speaking", src, on}           group: member src is talking (or stopped)
 //                 {type:"close", text}
 //   ui -> engine  {action:"hangup"|"accept"|"reject"|"mute"|"speaker"|"camera", on?}
 //                 {action:"videoFrame", key, data, screen, w, h}   our camera or screen, H.264 Annex-B (base64)
@@ -40,6 +41,7 @@ class ElectronCallUi {
   onVideoFrame(cb) { this.cb.videoFrame = cb; }
   onCamera(cb) { this.cb.camera = cb; }
   onDevice(cb) { this.cb.device = cb; }
+  onMicVolume(cb) { this.cb.micVolume = cb; }
   onScreen(cb) { this.cb.screen = cb; }
   onNeedKey(cb) { this.cb.needKey = cb; }
   onTile(cb) { this.cb.tile = cb; }
@@ -67,6 +69,27 @@ class ElectronCallUi {
     this._state({ ...this.state, phase: since ? 'connected' : this.state.phase === 'incoming' ? 'connecting' : this.state.phase, text, since });
   }
 
+  // A problem the window keeps showing while the call is up (status() text is
+  // hidden once connected): our microphone or speaker stopped.
+  notice(text) {
+    if (!this.state) return;
+    this.state = { ...this.state, notice: text || '' };
+    this._send({ type: 'state', ...this.state });
+    if (this.fallback) this.fallback.status(text, this.state.since);
+  }
+
+  // The microphone's source volume (0..100 %) for the window's slider.
+  micVolume(pct) {
+    if (!this.state) return;
+    this.state = { ...this.state, micVolume: pct };
+    this._send({ type: 'state', ...this.state });
+  }
+
+  // The loudest of our last 100 ms of microphone (-dBov, 127 = silence): the meter.
+  micLevel(level) {
+    if (this.state) this._send({ type: 'micLevel', level });
+  }
+
   // The peer turned its camera / mic off or on.
   peer({ camOff, muted, sharing }) {
     if (!this.state) return;
@@ -87,6 +110,23 @@ class ElectronCallUi {
 
   requestKeyFrame() {
     this._send({ type: 'keyframe' });
+  }
+
+  // The peer's name changed (its alias came after the window opened).
+  rename(name) {
+    if (!this.state || !name) return;
+    this._state({ ...this.state, name });
+  }
+
+  // Group: the members (src = UID, name, avatar, muted, camOff, state) for the tiles.
+  members(list) {
+    if (!this.state) return;
+    this._state({ ...this.state, members: list });
+  }
+
+  // Group: member src started / stopped talking (tile border, speaker layout).
+  speaking(src, on) {
+    this._send({ type: 'speaking', src, on: !!on });
   }
 
   // One received video frame (H.264 Annex-B). The line names the length and the
@@ -165,6 +205,9 @@ class ElectronCallUi {
         return;
       case 'device':
         if (m.kind === 'mic' || m.kind === 'speaker') this.cb.device(m.kind, typeof m.id === 'string' ? m.id : '');
+        return;
+      case 'micVolume':
+        if (this.cb.micVolume && Number.isFinite(Number(m.value))) this.cb.micVolume(Number(m.value));
         return;
       case 'mute':
         if (this.state) this.state = { ...this.state, muted: !!m.on };

@@ -16,6 +16,7 @@
  *                  speakerOff, peerCamOff, peerMuted, peerSharing, cameraEncode?}
  *                 {type:"video", key, codec, src, bin}   then bin raw H.264 bytes
  *                 {type:"keyframe"}                  the phone needs a key frame
+ *                 {type:"speaking", src, on}         group: member src talks (tile border, speaker layout)
  *                 {type:"close", text}
  *   ui -> engine  {action:"hangup"|"accept"|"reject"|"mute"|"speaker"|"camera", on?}
  *                 {action:"videoFrame", key, data, screen, w, h}   our camera or screen, H.264 Annex-B (base64)
@@ -328,6 +329,10 @@ function onEngineMessage(m) {
     }
   } else if (m.type === 'keyframe') {
     if (win && !win.isDestroyed() && winReady) win.webContents.send('zcall-ui-keyframe');
+  } else if (m.type === 'speaking') {
+    if (win && !win.isDestroyed() && winReady) win.webContents.send('zcall-ui-speaking', m);
+  } else if (m.type === 'micLevel') {
+    if (win && !win.isDestroyed() && winReady) win.webContents.send('zcall-ui-mic-level', m.level);
   } else if (m.type === 'video') {
     if (!win || win.isDestroyed() || !winReady || !lastState || lastState.phase !== 'connected') return;
     enterVideoMode();

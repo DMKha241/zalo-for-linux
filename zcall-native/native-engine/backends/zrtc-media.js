@@ -78,6 +78,7 @@ const SHARE_BURST = 6; // screen packets per 1 ms tick
 const VIDEO_BURST = 8;
 const VIDEO_TX_LOG_MS = 5000;
 const AUDIO_TX_LOG_MS = 10000;
+const SPEAK_DBOV = 50; // a member's audio level (-dBov) at or under this counts as speech
 // Group ZaviPing period: the real engine takes it from its config
 // (GroupCallController +0x85c), value not known yet.
 const GROUP_PING_INTERVAL_MS = Number(process.env.ZCALL_GROUP_PING_MS) || 5000;
@@ -159,6 +160,7 @@ class ZrtcMediaBackend extends EventEmitter {
     this.sendRate = null; // SendRate: 1-1 ladder, or a group call's spatial layers (no climb past the start)
     this.downPrev = null; // last audio reception counters (_downlinkLoss)
     this.groupRtcpIn = null; // group: RTCP kinds the SFU sent (_noteGroupRtcp)
+    this.speaking = new Map(); // group: member UID -> { hist, on, lastLoud } (_noteSpeaking)
     this.vOut = []; // 1-1 video packets waiting for the pacer: [packet, destination, label]
     this.vOutTimer = null;
     this.vTxWin = { frames: 0, keys: 0, bytes: 0, pkts: 0, paced: 0, since: Date.now(), lastTx: 0 }; // for the 5 s log line
@@ -489,6 +491,13 @@ class ZrtcMediaBackend extends EventEmitter {
     if (this.audio) this.audio.stdin.write(Buffer.from([0x4d, on ? 1 : 0]));
   }
 
+  // The call window's mic slider: the microphone source's volume, 0..100 %.
+  setMicVolume(percent) {
+    const pct = Math.max(0, Math.min(100, Math.round(Number(percent))));
+    if (!Number.isFinite(pct) || !this.audio) return;
+    this.audio.stdin.write(Buffer.from([0x56, pct]));
+  }
+
   // Speaker off: keep decoding (timing, stats) but play silence.
   setSpeaker(off) {
     this.speakerOff = !!off;
@@ -519,6 +528,7 @@ class ZrtcMediaBackend extends EventEmitter {
       for (const r of this.replies) this._sendEndCall(r.server, r.token);
     }
     if (this.startedAt) this.log('media: stopped', JSON.stringify({ ...this.counters, rxTypes: this.rxTypes, video: this.videoStats, videoTx: this.vTx, keyRequests: this.keyRequests, rtcp: this.rtcp ? this.rtcp.counters : undefined, members: Object.fromEntries(this.members), videoMembers: Object.fromEntries(this.videoMembers) }));
+    else if (this.counters.rx) this.log('media: setup audio rx', this.counters.rx, 'before the call connected');
     this.startedAt = 0;
     this.active = false;
     this._onInitReply = null;
@@ -580,16 +590,30 @@ class ZrtcMediaBackend extends EventEmitter {
         }
       }
     }
-    this.audio = spawn('python3', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    // audio-io's own messages go to the engine log.
+    const audio = spawn('python3', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.audio = audio;
+    // audio-io's own messages go to the engine log. "fault: mic" / "fault:
+    // speaker" (the device stopped for good) and an audio-io that dies during
+    // the call become 'audioFault' (the call window says so); after stop()
+    // this.audio is null and the teardown says nothing.
     let errBuf = '';
-    this.audio.stderr.setEncoding('utf8');
-    this.audio.stderr.on('data', (d) => {
+    audio.stderr.setEncoding('utf8');
+    audio.stderr.on('data', (d) => {
       const lines = (errBuf + d).split('\n');
       errBuf = lines.pop();
-      for (const l of lines) if (l.trim()) this.log(l.replace(/^\[audio-io\] /, 'audio: '));
+      for (const l of lines) {
+        if (!l.trim()) continue;
+        this.log(l.replace(/^\[audio-io\] /, 'audio: '));
+        const m = /^\[audio-io\] fault: (mic|speaker)\b/.exec(l);
+        if (m && this.audio === audio) this.emit('audioFault', m[1]);
+        const v = /^\[audio-io\] mic volume: (\d+)%/.exec(l);
+        if (v && this.audio === audio) this.emit('micVolume', Number(v[1]));
+      }
     });
-    this.audio.on('exit', (code) => this.log('media: audio-io exited', code));
+    audio.on('exit', (code, signal) => {
+      this.log('media: audio-io exited', code === null ? signal : code);
+      if (this.audio === audio) this.emit('audioFault', 'audio');
+    });
     if (this.muted) this.setMute(true);
     if (this.speakerOff) this.setSpeaker(true);
     this.audio.stdin.on('error', () => {});
@@ -607,10 +631,22 @@ class ZrtcMediaBackend extends EventEmitter {
           const n = buf.readUInt16BE(2);
           if (buf.length < 4 + n) break;
           this._sendAudioFrame(buf.subarray(4, 4 + n), buf[1]);
+          this._micLevel(buf[1]);
           buf = buf.subarray(4 + n);
         } else break;
       }
     });
+  }
+
+  // The call window's mic meter: the loudest frame (lowest -dBov) of every
+  // 100 ms, as 'micLevel'. Five frames per message, nothing logged.
+  _micLevel(level) {
+    this.micPeak = Math.min(this.micPeak === undefined ? 127 : this.micPeak, level);
+    const now = Date.now();
+    if (now - (this.micLevelAt || 0) < 100) return;
+    this.micLevelAt = now;
+    this.emit('micLevel', this.micPeak);
+    this.micPeak = 127;
   }
 
   _sendAudioFrame(opus, level = 127) {
@@ -1044,31 +1080,24 @@ class ZrtcMediaBackend extends EventEmitter {
     for (const e of entries) {
       if (this.vidAsked.get(e.uid) === e.qualityId) continue;
       this.vidAsked.set(e.uid, e.qualityId);
-      this.log(`media: VidQualReq member ${e.uid}: quality id 0x${e.qualityId.toString(16)}` + (this.renderWidth.has(e.uid) ? `, tile ${this.renderWidth.get(e.uid)} px` : ', tile size unknown (lowest layer)'));
+      const layer = this.videoPlan && this.videoPlan.layers && this.videoPlan.layers.find((L) => (L.id & 0xff) === e.qualityId);
+      const size = layer ? `, ${layer.b}x${layer.c}` : '';
+      this.log(`media: VidQualReq member ${e.uid}: quality id 0x${e.qualityId.toString(16)}${size}` + (this.renderWidth.has(e.uid) ? `, tile ${this.renderWidth.get(e.uid)} px` : ', tile size unknown (lowest layer)'));
     }
   }
 
   // Which layer of a member to ask the SFU for. macOS GroupCallController::
-  // getVideoQualityIdReceiving(uid, renderWidth) (disassembled 2026-10-07): walk the
-  // partner's layers from the top and take the first whose width <= the tile's width,
-  // layer 0 at the least; id = spatial * 3 + temporal, so the best frame rate of the
-  // chosen size. Without the partner's own table we use the call's (same zrtc_config)
-  // and its narrower side as the width, which a portrait phone camera really has: a
-  // landscape sender gets a layer that is bigger than it needs, never smaller.
-  // Until the window reported the tile: the lowest layer. 0xff there (as before
-  // 2026-10-09) stopped the member's video for good when the first frame came
-  // while the window was still "connecting" (incoming group call): no frame, so
-  // no tile, so no width, so still 0xff (1 video packet in the whole call).
+  // getVideoQualityIdReceiving walks the partner's layers from the top.
+  // Without that table we use the call's (same zrtc_config). See selectQualityId.
+  // Until the window reported the tile: the lowest layer. 0xff there stopped the
+  // member's video for good when the first frame arrived while the window was
+  // still connecting.
   qualityIdFor(uid) {
     if (this.share && (uid >>> 0) === this.share.uid) return 0; // our own screen, loopback check
     if (process.env.ZCALL_CAM_LOOPBACK === '1' && (uid >>> 0) === ((this.params && this.params.localUid) >>> 0)) return 0; // our own camera, loopback check
     const plan = this.videoPlan;
-    const w = this.renderWidth.get(uid);
     if (process.env.ZCALL_GROUP_QUALITY === '0' || !plan || !plan.layers.length) return 0xff;
-    let pick = plan.layers[0];
-    if (!w) return pick.id & 0xff;
-    for (const L of plan.layers) if (Math.min(L.b, L.c) <= w) pick = L;
-    return pick.id & 0xff;
+    return selectQualityId(plan.layers, this.renderWidth.get(uid) || 0);
   }
 
   // The window drew (or resized) the tile of this member.
@@ -1139,9 +1168,20 @@ class ZrtcMediaBackend extends EventEmitter {
       if (this.active && this.startedAt) this._onGroupControl(p);
       return;
     }
-    // The server tells us the peer hung up (seen 20 ms before control end_call).
+    // The active server tells us the peer hung up (seen 20 ms before control
+    // end_call). EndCall we ourselves sent to the other probed servers comes
+    // back on this same socket; treating that ack as a hangup dropped a live
+    // call (2026-10-12 01:17, no control end_call) and the next attempts never
+    // got ring_ring or answer.
     if (p.msgType === MSG_TYPES.SERVER_REPLY && p.cmd === COMMANDS.END_CALL) {
-      if (this.active && this.startedAt) this.emit('peerEnd');
+      if (endCallIsPeer(p, rinfo, this.activeServer, this.params && this.params.callId)) {
+        if (this.active && this.startedAt) {
+          this.log('media: EndCall from the active server');
+          this.emit('peerEnd');
+        }
+      } else {
+        this.log(`media: EndCall ignored from ${rinfo.address}:${rinfo.port} call ${p.callId || '-'} (not the active server)`);
+      }
       return;
     }
     if (p.isMedia && p.msgType === MSG_TYPES.AUDIO_RTP_DOWN) this._onAudio(p.payload);
@@ -1297,6 +1337,26 @@ class ZrtcMediaBackend extends EventEmitter {
     this.log(`media: member ${ssrc} SFU ext ${sfu} (PT ${rtp[1] & 0x7f}${rtp[1] & 0x80 ? ', marker' : ''}, packet ${m.pkts})`);
   }
 
+  // Group: who is talking, from the audio level each member's packets carry
+  // (RFC 6464, one-byte extension id 2: V bit + level in -dBov, 127 = silence;
+  // the macOS client sends 41..46 while speaking). On when 4 of the last 10
+  // frames (200 ms) are louder than SPEAK_DBOV, off after 600 ms below it. The
+  // window marks the tile and, in the speaker layout, puts the speaker in the
+  // main view (macOS: onPartnerSpeakingStateChanged -> changeCurrentMainUserId).
+  _noteSpeaking(ssrc, rtp) {
+    const level = rtpAudioLevel(rtp);
+    if (level === null) return;
+    const now = Date.now();
+    let sp = this.speaking.get(ssrc);
+    if (!sp) { sp = { hist: [], on: false, lastLoud: 0 }; this.speaking.set(ssrc, sp); }
+    const loud = level <= SPEAK_DBOV;
+    sp.hist.push(loud);
+    if (sp.hist.length > 10) sp.hist.shift();
+    if (loud) sp.lastLoud = now;
+    const on = sp.on ? now - sp.lastLoud < 600 : sp.hist.filter(Boolean).length >= 4;
+    if (on !== sp.on) { sp.on = on; this.emit('memberSpeaking', ssrc, on); }
+  }
+
   // Group: the RTCP the SFU sends us (type 0x05 / 0x0f): its kinds (PT/fmt) per 5 s,
   // and the first two packets of each kind in hex, to learn what it expects back.
   _noteGroupRtcp(kind, buf) {
@@ -1375,12 +1435,18 @@ class ZrtcMediaBackend extends EventEmitter {
       const n = (this.members.get(got.ssrc) || 0) + 1;
       this.members.set(got.ssrc, n);
       if (n === 1) { this.log('media: first audio from member', got.ssrc); this.emit('memberAudio', got.ssrc); }
+      this._noteSpeaking(got.ssrc, rtp);
     }
     if (this.rtcp) this.rtcp.onRtp('audio', rtp, Date.now());
     this.counters.rx++;
     this.counters.rxSecond++;
     this.lastRxAt = Date.now();
     if (this.counters.rx === 1) this.log('media: first audio from peer');
+    // Answer usually arrives with the first audio. When the control channel
+    // dropped it (2026-10-12 01:17), RTP still came and the window stayed on
+    // "Đang gọi…" until the caller cancelled a call the other phone had taken.
+    const phase = earlyAudioPhase(!!this.startedAt, !!this.group, this.counters.rx);
+    if (phase) this.emit('earlyAudio', phase);
     if (typeof this.onAudioPacket === 'function') this.onAudioPacket(got.opus, this.srtpContext);
     if (this.audio) {
       const h = Buffer.alloc(11);
@@ -1391,6 +1457,24 @@ class ZrtcMediaBackend extends EventEmitter {
       this.audio.stdin.write(Buffer.concat([h, got.opus]));
     }
   }
+}
+
+// RFC 6464 audio level of an RTP packet (one-byte extension id 2), 0..127 (-dBov), or null.
+function rtpAudioLevel(rtp) {
+  if (rtp.length < 16 || !(rtp[0] & 0x10)) return null;
+  let o = 12 + 4 * (rtp[0] & 0x0f);
+  if (o + 4 > rtp.length || rtp.readUInt16BE(o) !== 0xbede) return null;
+  const end = Math.min(rtp.length, o + 4 + 4 * rtp.readUInt16BE(o + 2));
+  o += 4;
+  while (o < end) {
+    if (rtp[o] === 0) { o++; continue; }
+    const id = rtp[o] >> 4;
+    const len = (rtp[o] & 0x0f) + 1;
+    if (id === 15) return null;
+    if (id === 2 && o + 1 < end) return rtp[o + 1] & 0x7f;
+    o += 1 + len;
+  }
+  return null;
 }
 
 // Group encoder flags from the same zrtcConfig macOS reads. Absent keys keep
@@ -1409,19 +1493,53 @@ function groupAudioArgs(config) {
   return args;
 }
 
+// The layer to ask the SFU for. macOS walks from the top and takes the first
+// size that fits the tile. The id asked is temporal 0 of that size
+// (spatial * 3): id 6, temporal 0 of the third size, on a 560 px tile came
+// back as base 180x320 only (2026-10-11). macOS publishes two spatial layers
+// and the phone asks for the second, so the third size is asked for only when
+// the tile is at least as wide as that layer's longer side. No tile yet: the
+// lowest layer. An empty table is 0xff.
+function selectQualityId(layers, tileWidth) {
+  if (!Array.isArray(layers) || !layers.length) return 0xff;
+  const spatial = [];
+  const seen = new Set();
+  for (const L of layers) {
+    const s = Math.floor((Number(L.id) >>> 0) / 3);
+    if (seen.has(s)) continue;
+    seen.add(s);
+    spatial.push(L);
+  }
+  const w = Number(tileWidth) || 0;
+  if (!w) return spatial[0].id & 0xff;
+  let top = spatial.length;
+  if (spatial.length >= 3) {
+    const hi = spatial[spatial.length - 1];
+    if (w < Math.max(hi.b, hi.c)) top = spatial.length - 1;
+  }
+  let pick = spatial[0];
+  for (let i = top - 1; i >= 0; i--) {
+    const L = spatial[i];
+    if (Math.min(L.b, L.c) <= w) { pick = L; break; }
+  }
+  return pick.id & 0xff;
+}
+
 // What PipeWire's WebRTC plugin actually honors, for a 1-1 call and a group
 // call alike. Echo level, AECM routing and comfort noise have no switch there
-// (desktop AEC, high suppression, fixed). The jitter ceiling is the smaller
-// of maxAudioDelayMs and audioJitterMax, both milliseconds in zrtcConfig.
+// (desktop AEC, high suppression, fixed). The jitter ceiling is
+// maxAudioDelayMs (1000 or 2000 in captured zrtcConfig). audioJitterMax is
+// 50 or 100 in those same configs; taking the smaller of the two pinned the
+// buffer to the floor (logged "delay 100..50") and the playout then
+// time-compressed speech. NetEq's ceiling is the max delay.
 function callAudioArgs(config) {
   const c = config && typeof config === 'object' ? config : {};
   const args = [];
-  const caps = [];
-  for (const key of ['maxAudioDelayMs', 'audioJitterMax']) {
-    const n = Number(c[key]);
-    if (Number.isFinite(n) && n > 0) caps.push(n);
-  }
-  if (caps.length) args.push('--max-delay', String(Math.trunc(Math.min(...caps))));
+  const maxDelay = Number(c.maxAudioDelayMs);
+  const jitterMax = Number(c.audioJitterMax);
+  const cap = Number.isFinite(maxDelay) && maxDelay > 0 ? maxDelay
+    : (Number.isFinite(jitterMax) && jitterMax > 0 ? jitterMax : 0);
+  if (cap) args.push('--max-delay', String(Math.trunc(cap)));
   if (c.audioEchoCancellation === false) args.push('--no-aec');
   if (c.audioNoiseSuppression === false) args.push('--no-ns');
   if (c.audioHighPassFilter === false) args.push('--no-high-pass');
@@ -1429,4 +1547,25 @@ function callAudioArgs(config) {
   return args;
 }
 
-module.exports = { ZrtcMediaBackend, parseHostPort, groupAudioArgs, callAudioArgs };
+// A SERVER_REPLY EndCall is the peer hanging up only when it comes from the
+// server we are actually using, and for this call. Acks of the EndCall we
+// sent to the other probed servers share the socket and must not end it.
+function endCallIsPeer(packet, rinfo, activeServer, callId) {
+  if (!packet || packet.cmd !== COMMANDS.END_CALL) return false;
+  if (!activeServer || !rinfo || rinfo.address !== activeServer.host || rinfo.port !== activeServer.port) return false;
+  const got = packet.callId >>> 0;
+  const ours = (callId || 0) >>> 0;
+  if (got && ours && got !== ours) return false;
+  return true;
+}
+
+// Before media.start (no answer yet): the first peer frame, then a full
+// second of them (50 × 20 ms). Null once the call is up, or on a group call.
+function earlyAudioPhase(started, group, rx) {
+  if (started || group) return null;
+  if (rx === 1) return 'first';
+  if (rx === 50) return 'stream';
+  return null;
+}
+
+module.exports = { ZrtcMediaBackend, parseHostPort, groupAudioArgs, callAudioArgs, selectQualityId, rtpAudioLevel, endCallIsPeer, earlyAudioPhase };

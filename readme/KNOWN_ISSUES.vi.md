@@ -19,6 +19,11 @@ Tài liệu này ghi lại những hạn chế hiện tại và các lỗi trư�
 
 ## ✅ Các lỗi đã sửa và cách khắc phục tạm thời
 
+- **Gọi điện (gọi thoại, gọi video, chia sẻ màn hình, gọi nhóm):**
+  - **Lỗi:** Không gọi hay nhận cuộc gọi được trên Linux. Wine wrapper của [PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62) (cảm ơn @collyn) giúp gọi được một phần, qua Wine, `ZaloCall.exe` và thư viện 32-bit.
+  - **Cách giải quyết:** Gọi thoại, gọi video, chia sẻ màn hình và gọi nhóm (âm thanh, camera, chia sẻ màn hình) chạy bằng engine gọi điện native cho Linux ([`zcall-native/`](../zcall-native/README.md), từ [zalo-linux-native](https://github.com/nct88/zalo-linux-native)), với cửa sổ gọi theo bố cục Zalo macOS, dùng biểu tượng và âm thanh gốc (lấy từ DMG macOS lúc build), cuộc gọi đến hiện khung báo ở góc màn hình: không Wine, không `ZaloCall.exe`, không thư viện 32-bit. Cần `python3`, libopus và bộ công cụ PulseAudio (Debian / Ubuntu: `sudo apt install python3 libopus0 pulseaudio-utils`); lần gọi đầu sẽ báo nếu thiếu gói. Không chuyển được từ gọi thoại sang video giữa cuộc gọi, giống Zalo macOS và Windows (chỉ điện thoại với điện thoại).
+  - **Ghi nhận:** Cảm ơn [@nct88](https://github.com/nct88). Xem [PR #128](https://github.com/VN-Linux-Family/zalo-for-linux/pull/128), [PR #129](https://github.com/VN-Linux-Family/zalo-for-linux/pull/129), [PR #135](https://github.com/VN-Linux-Family/zalo-for-linux/pull/135), [PR #136](https://github.com/VN-Linux-Family/zalo-for-linux/pull/136) và [PR #137](https://github.com/VN-Linux-Family/zalo-for-linux/pull/137).
+
 - **Chủ đề theo hệ thống/tự động không hoạt động:** 
   - **Lỗi:** Ứng dụng không đổi theo chế độ sáng/tối của hệ thống. Cả ZaDark lẫn Zalo đều bỏ qua `prefers-color-scheme`. 
   - **Cách giải quyết:** Giờ đây ứng dụng có thể nhận biết thay đổi theo thời gian thực qua GNOME D-Bus (org.gnome.desktop.interface color-scheme), XDG Desktop Portal (org.freedesktop.appearane) hoặc gtk-theme. Ứng dụng tự động đồng bộ `nativeTheme.themeSource` và class `.dark` trong DOM mà không can thiệp hay làm thay đổi thanh tiêu đề mặc định của hệ điều hành.

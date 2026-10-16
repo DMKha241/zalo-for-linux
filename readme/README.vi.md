@@ -10,11 +10,6 @@ Cảm ơn **realdtn2** đã đưa ra giải pháp: [realdtn2/zalo-linux-2026](ht
 
 ## ⚠️ Lưu ý quan trọng: Các lỗi đã biết
 
-- **✅ Gọi điện chạy native:** gọi thoại, gọi video, chia sẻ màn hình và gọi nhóm (âm thanh, camera, chia sẻ màn hình) chạy bằng engine gọi điện native cho Linux ([`zcall-native/`](../zcall-native/README.md), từ [zalo-linux-native](https://github.com/nct88/zalo-linux-native)), với cửa sổ gọi theo bố cục Zalo macOS, dùng biểu tượng và âm thanh gốc (lấy từ DMG macOS lúc build), cuộc gọi đến hiện khung báo ở góc màn hình: không Wine, không `ZaloCall.exe`, không thư viện 32-bit. Cần `python3`, libopus và bộ công cụ PulseAudio (Debian / Ubuntu: `sudo apt install python3 libopus0 pulseaudio-utils`); lần gọi đầu sẽ báo nếu thiếu gói. Không chuyển được từ gọi thoại sang video giữa cuộc gọi, giống Zalo macOS và Windows (chỉ điện thoại với điện thoại). Thay cho Wine bridge của [PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62) (cảm ơn @collyn).
-
-- **➖ Chỉ bị ở Ubuntu: Zalo không chạy được trên Ubuntu 23.10 trở đi mà không có cờ `--no-sandbox`:** Ubuntu đã giới hạn không gian tên người dùng không đặc quyền kể từ Ubuntu 23.10, và mỗi ứng dụng cần một hồ sơ để truy cập chúng. Việc hạn chế khiến `chrome-sandbox` lỗi nếu không để nó được sở hữu bởi `root` và có chế độ `4755` hoặc có một hồ sơ AppArmor, nên xin hãy thêm `--no-sandbox` vào các tập tin `.desktop` của Zalo, hoặc tắt việc hạn chế bằng cách làm theo [Hướng dẫn gỡ lỗi AM của iVAN, mục "Đống rắc rối Ubuntu"](https://github.com/ivan-hc/AM/blob/main/docs/troubleshooting.md#ubuntu-mess) (Tiếng Anh). Xem [Issue #72](https://github.com/VN-Linux-Family/zalo-for-linux/issues/72) và [Issue #143](https://github.com/VN-Linux-Family/zalo-for-linux/issues/143) để biết thêm chi tiết.
-
-
 > 💡 **Danh sách đầy đủ các lỗi đã sửa, cách khắc phục tạm thời và ghi nhận đóng góp của cộng đồng nằm trong [KNOWN_ISSUES.vi.md](./KNOWN_ISSUES.vi.md).**
 
 Dự án này phù hợp nhất với những ai cần một ứng dụng Zalo chạy như ứng dụng gốc trên Linux và không ngại xử lý một vài thao tác kỹ thuật để dùng đầy đủ tính năng.

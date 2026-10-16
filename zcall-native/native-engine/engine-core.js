@@ -92,6 +92,9 @@ class EngineCore {
     if (typeof this.ui.onDevice === 'function') {
       this.ui.onDevice((kind, name) => { if (this.media.setDevice) this.media.setDevice(kind, name); });
     }
+    if (typeof this.ui.onMicVolume === 'function') {
+      this.ui.onMicVolume((pct) => { if (this.media.setMicVolume) this.media.setMicVolume(pct); });
+    }
     if (typeof this.ui.onSpeaker === 'function') {
       this.ui.onSpeaker((on) => {
         if (this.call) this.call.speakerOff = !!on;
@@ -110,9 +113,14 @@ class EngineCore {
       media.on('timeout', () => this.hangup('media-timeout'));
       media.on('failed', (why) => this.hangup(`media-${why}`));
       media.on('peerEnd', (why) => (this.call && this.call.group ? this._groupEnded(why || 'server') : this._peerEnded('server')));
+      media.on('earlyAudio', (phase) => this._earlyAudio(phase));
+      media.on('audioFault', (kind) => this._audioFault(kind));
+      media.on('micVolume', (pct) => { if (typeof this.ui.micVolume === 'function') this.ui.micVolume(pct); });
+      media.on('micLevel', (level) => { if (typeof this.ui.micLevel === 'function') this.ui.micLevel(level); });
       media.on('roster', (uids) => this._groupRoster(uids));
       media.on('memberLeft', (uid) => this._groupMemberLeft(uid, 'server'));
       media.on('memberAudio', (uid) => this._groupMemberIn(uid));
+      media.on('memberSpeaking', (uid, on) => { if (this.call && this.call.group && typeof this.ui.speaking === 'function') this.ui.speaking(uid, on); });
       media.on('video', (pkt) => this._onVideoPacket(pkt));
       media.on('keyframe', (why) => this._requestKeyFrame(why));
       // The rung our camera is encoded at (send-rate.js): the 1-1 ladder, or a
@@ -135,7 +143,9 @@ class EngineCore {
       case 'request': return this._onRequest(f.command, data);
       case 'control': return this._onControl(data.act, data);
       case 'recvSignal': return this._onRecvSignal(f.command, data);
-      case 'response': return; // answers to our requests (getAliasName, ...): nothing to do
+      case 'response': // answers to our requests: the alias name; the others need nothing
+        if (f.command === 'getAliasName') this._onAliasName(data);
+        return;
       default: this.log('unhandled type', f.type, f.command);
     }
   }
@@ -188,6 +198,22 @@ class EngineCore {
     this.emit({ type: 'sendSignal', command: 401, data: { callId: c.callId, calleeId: c.peerId, codec: '[]\n', type: c.type } });
     if (c.type === 3) this._camMic();
     this.ui.open({ title: c.peerName || 'Zalo', text: 'Đang gọi…', avatar: c.avatar, video: c.type === 3 });
+    // The name the user saved for this contact (makeCall gives the real name).
+    if (c.peerId) this.emit({ type: 'request', command: 'getAliasName', data: { noisedId: c.peerId } });
+  }
+
+  // Zalo's answer to getAliasName {noisedId, aliasName}: the contact's alias ("tên gợi
+  // nhớ") replaces the real name (incoming: params.Dname; outgoing: makeCall's
+  // partner.name) in the call window and the incoming notice, as macOS
+  // ZCallInfo::receiveAliasName -> updatePartnerAliasName. Before this the answer was
+  // dropped and both showed the real name (reported 2026-10-10).
+  _onAliasName(d) {
+    const c = this.call;
+    const alias = String((d && d.aliasName) || '').trim();
+    if (!c || c.group || !alias || String(d.noisedId || '') !== c.peerId || alias === c.peerName) return;
+    c.peerName = alias;
+    this.log('alias name for the peer received');
+    if (typeof this.ui.rename === 'function') this.ui.rename(alias);
   }
 
   // Our screen replaces the camera in the video stream. A 1-1 call tells the
@@ -305,12 +331,7 @@ class EngineCore {
           this._finish(103, status === 3 ? 'Người nhận đã từ chối' : 'Không liên lạc được');
           return;
         }
-        c.state = 'connected';
-        c.startedAt = Date.now();
-        this.media.start(c.role, params.rtpSerIp);
-        this.emit({ type: 'sendSignal', command: 408, data: { callId: c.callId, calleeId: c.peerId } });
-        if (c.type === 3) this._camMic();
-        this.ui.status('Đã kết nối', c.startedAt);
+        this._connectCaller(params.rtpSerIp);
         return;
       }
       case 'end_call':
@@ -517,6 +538,54 @@ class EngineCore {
     c.video.push(pkt);
   }
 
+  // Caller side is up: our server unless the answer named one. 408 tells Zalo.
+  _connectCaller(rtpSerIp) {
+    const c = this.call;
+    if (!c || c.role !== 'caller' || c.state === 'connected' || c.state === 'ended') return;
+    c.state = 'connected';
+    c.startedAt = Date.now();
+    this.media.start(c.role, rtpSerIp || null);
+    this.emit({ type: 'sendSignal', command: 408, data: { callId: c.callId, calleeId: c.peerId } });
+    if (c.type === 3) this._camMic();
+    this.ui.status('Đã kết nối', c.startedAt);
+  }
+
+  // Peer RTP before the answer control. The first frame means the other phone
+  // is in the call, so the window leaves "Đang gọi…". A full second of frames
+  // with still no answer means that control was lost: connect on our server.
+  _earlyAudio(phase) {
+    const c = this.call;
+    if (!c || c.group || c.role !== 'caller' || c.state === 'connected' || c.state === 'ended') return;
+    if (phase === 'first' && c.state === 'calling') {
+      c.state = 'ringing';
+      this.ui.status('Đang đổ chuông…');
+      this.log('peer audio during setup, no ring signal yet');
+      return;
+    }
+    if (phase === 'stream') {
+      this.log('answer signal missing, connecting on peer audio');
+      this._connectCaller(null);
+    }
+  }
+
+  // The microphone, the speaker or all of audio-io stopped during the call (no
+  // sound server, a device gone). The call goes on (the other side may still
+  // hear us, or we them), and the window says what is wrong, once per device.
+  _audioFault(kind) {
+    const c = this.call;
+    if (!c || c.state === 'ended') return;
+    c.audioFaults = c.audioFaults || new Set();
+    if (kind === 'audio') { c.audioFaults.add('mic'); c.audioFaults.add('speaker'); } else c.audioFaults.add(kind);
+    const mic = c.audioFaults.has('mic'), speaker = c.audioFaults.has('speaker');
+    const text = (mic && speaker ? 'Không mở được micro và loa'
+      : mic ? 'Không mở được micro, bên kia không nghe thấy bạn'
+        : 'Không phát được âm thanh ra loa') + '. Kiểm tra PipeWire / PulseAudio.';
+    if (text === c.audioNotice) return;
+    c.audioNotice = text;
+    this.log('audio fault:', [...c.audioFaults].join(' '));
+    if (typeof this.ui.notice === 'function') this.ui.notice(text);
+  }
+
   // The other side hung up, cancelled or declined.
   _peerEnded(why) {
     const c = this.call;
@@ -705,7 +774,7 @@ class EngineCore {
     const who = Number(d.userId || d.fromId) || 0;
     switch (act) {
       case 'group_broadcast': // member state, sent every few seconds
-        if (who && who !== c.localUid) this._groupMember(who, { state: Number(d.callState) === 3 ? 'incall' : 'ringing', muted: Number(d.audioState) === 1 });
+        if (who && who !== c.localUid) this._groupMember(who, { state: Number(d.callState) === 3 ? 'incall' : 'ringing', muted: Number(d.audioState) === 1, camOff: Number(d.videoState) === 1 });
         return;
       case 'group_answer':
         if (who && who !== c.localUid) { this._groupMember(who, { state: 'incall' }); this._groupGreet(who); }
@@ -763,6 +832,9 @@ class EngineCore {
       maxUsers: Number(g.maxUsers) || 8,
       invited: ids,
       inviteNames: (data.partner || []).map((p) => p.name || ''),
+      // Name / avatar of the invited (Zalo ids, not UIDs): only a single invitee can be told
+      // apart when its UID shows up (_groupMember).
+      invitePartners: (data.partner || []).map((p) => ({ name: p.name || '', avatar: p.avatar || '' })),
       members: new Map(),
       pingMs: 9000,
       startedAt: 0,
@@ -885,7 +957,8 @@ class EngineCore {
     for (const p of Array.isArray(d.partnerInfo) ? d.partnerInfo : []) {
       const uid = Number(p.userId) || 0;
       if (!uid || uid === localUid) continue;
-      members.set(uid, { name: p.name || '', state: Number(p.callState) === 3 ? 'incall' : 'ringing', muted: Number(p.audioState) === 1 });
+      members.set(uid, { name: p.name || '', avatar: p.avatar || '', state: Number(p.callState) === 3 ? 'incall' : 'ringing',
+        muted: Number(p.audioState) === 1, camOff: Number(p.videoState) === 1 });
     }
     const interval = Number(d.interval) || 0;
     this.call = {
@@ -1040,9 +1113,26 @@ class EngineCore {
     const c = this.call;
     if (!c || !c.group || uid === c.localUid) return;
     const m = c.members.get(uid) || { name: '' };
-    c.members.set(uid, { ...m, ...info });
+    const next = { ...m, ...info };
+    if (!next.name && c.invitePartners && c.invitePartners.length === 1) Object.assign(next, c.invitePartners[0]);
+    c.members.set(uid, next);
     if (info.state === 'incall') c.answered = true;
     this._groupStatus();
+  }
+
+  // The window's tiles: every member in the call or being rung, with name, avatar,
+  // micro and camera state (macOS PartnerUI: label + mic icon, avatar when the camera
+  // is off). Sent when it changes.
+  _groupMembersToUi() {
+    const c = this.call;
+    if (!c || !c.group || typeof this.ui.members !== 'function') return;
+    const list = [...c.members.entries()]
+      .filter(([, m]) => m.state === 'incall' || m.state === 'ringing')
+      .map(([uid, m]) => ({ src: uid, name: m.name || '', avatar: m.avatar || '', muted: !!m.muted, camOff: !!m.camOff, state: m.state }));
+    const key = JSON.stringify(list);
+    if (key === c.membersKey) return;
+    c.membersKey = key;
+    this.ui.members(list);
   }
 
   _groupMemberIn(uid) {
@@ -1087,6 +1177,7 @@ class EngineCore {
   _groupStatus() {
     const c = this.call;
     if (!c || !c.group || c.state !== 'connected') return;
+    this._groupMembersToUi();
     const names = [...c.members.values()].filter((m) => m.state === 'incall').map((m) => m.name || 'Thành viên');
     const waiting = c.role === 'caller' && !c.answered ? 'Đang đổ chuông…' : 'Đang chờ người khác…';
     const text = names.length ? `${names.length + 1} người: Bạn, ${names.join(', ')}` : waiting;
