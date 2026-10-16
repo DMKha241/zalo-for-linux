@@ -11,6 +11,10 @@ Tài liệu này ghi lại những hạn chế hiện tại và các lỗi trư�
 - **Gọi điện trên ARM64:** 
   Gọi điện nay chạy bằng engine native (`zcall-native/`, Node.js + Python, không có phần nào chỉ chạy trên x86) thay cho Wine và `ZaloCall.exe` ([PR #62](https://github.com/VN-Linux-Family/zalo-for-linux/pull/62), [Issue #70](https://github.com/VN-Linux-Family/zalo-for-linux/issues/70)), nên aarch64 không còn bị loại trừ, nhưng chưa thử gọi trên aarch64.
 
+- **Chỉ bị ở Ubuntu: Zalo không chạy được trên Ubuntu 23.10 trở đi mà không có cờ `--no-sandbox`:** 
+  Ubuntu đã giới hạn không gian tên người dùng không đặc quyền kể từ phiên bản 23.10, và mỗi ứng dụng cần một hồ sơ để truy cập chúng. Việc hạn chế khiến `chrome-sandbox` lỗi nếu không để nó được sở hữu bởi `root` và có chế độ `4755` hoặc có một hồ sơ AppArmor. 
+  Xin hãy thêm `--no-sandbox` vào các tập tin `.desktop` của Zalo, hoặc tắt việc hạn chế bằng cách làm theo [Hướng dẫn gỡ lỗi AM của iVAN, mục "Đống rắc rối Ubuntu"](https://github.com/ivan-hc/AM/blob/main/docs/troubleshooting.md#ubuntu-mess) (Tiếng Anh). Xem [Issue #72](https://github.com/VN-Linux-Family/zalo-for-linux/issues/72) và [Issue #143](https://github.com/VN-Linux-Family/zalo-for-linux/issues/143).
+
 ---
 
 ## ✅ Các lỗi đã sửa và cách khắc phục tạm thời

@@ -30,12 +30,13 @@ We strongly recommend using **Gear Lever** or **AM** to integrate the AppImage p
 
 #### For AM users:
 
+*Note: Replace `am` with `appman` in all lines containing this string if you chose to install `appman`.*
+
 1. Install **AM** from [AM's guide](https://github.com/ivan-hc/AM#using-the-am-installer-script-to-choose-between-local-and-system-wide-installation)
 2. Run this command to install Zalo:
    ```bash
    am -i zalo
    ```
-   *Note: Replace `am` with `appman` if you chose to install `appman`.*
 3. A prompt like this will appear:
    <img width="747" height="600" alt="installer" src="./sample/am-guide.png" />
 
@@ -51,6 +52,7 @@ We strongly recommend using **Gear Lever** or **AM** to integrate the AppImage p
    ```bash
    am -u
    ```
+   *Tips: It is recommended to install `appimageupdatetool` from AM by running the command `am -i appimageupdatetool` to update apps faster. The first version (which has number 1) is more recommended than the second one (which has number 2).*
 
 #### For Gear Lever users:
 
