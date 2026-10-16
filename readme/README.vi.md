@@ -35,12 +35,13 @@ Chúng mình khuyên bạn nên dùng **Gear Lever** hoặc **AM** để AppImag
 
 #### Nếu bạn dùng AM
 
+*Lưu ý: nếu bạn chọn cài `appman` thì thay `am` bằng `appman` trong tất cả các dòng chứa chuỗi này.*
+
 1. Cài **AM** theo [hướng dẫn của AM](https://github.com/ivan-hc/AM#using-the-am-installer-script-to-choose-between-local-and-system-wide-installation).
 2. Chạy lệnh sau để cài Zalo:
    ```bash
    am -i zalo
    ```
-   *Lưu ý: nếu bạn chọn cài `appman` thì thay `am` bằng `appman`.*
 3. Một lời nhắc như hình dưới sẽ hiện ra:
    <img width="747" height="600" alt="installer" src="../sample/am-guide.png" />
 
@@ -56,6 +57,7 @@ Chúng mình khuyên bạn nên dùng **Gear Lever** hoặc **AM** để AppImag
    ```bash
    am -u
    ```
+   *Mẹo: Bạn nên cài đặt `appimageupdatetool` từ AM bằng cách chạy lệnh `am -i appimageupdatetool` để cập nhật các ứng dụng nhanh hơn. Phiên bản đầu tiên (cái có số là 1) được khuyến nghị hơn phiên bản thứ hai (có số là 2).*
 
 #### Nếu bạn dùng Gear Lever
 
