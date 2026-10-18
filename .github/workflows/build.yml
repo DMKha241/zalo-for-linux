@@ -69,12 +69,12 @@ jobs:
             runner: ubuntu-latest
             sys_deps: >
               apt update &&
-              apt install -y git curl wget ca-certificates xz-utils python3 build-essential libssl-dev liblzma-dev p7zip-full gcc g++ clang libclang-dev llvm libc6-dev libx11-dev libxcb1-dev libxext-dev zsync
+              apt install -y git curl wget ca-certificates xz-utils python3 build-essential libssl-dev liblzma-dev p7zip-full gcc g++ clang libclang-dev llvm libc6-dev libx11-dev libxcb1-dev libxext-dev zlib1g-dev zsync
           - arch: aarch64
             runner: ubuntu-24.04-arm
             sys_deps: >
               apt update &&
-              apt install -y git curl wget ca-certificates xz-utils python3 build-essential libssl-dev liblzma-dev p7zip-full gcc g++ clang libclang-dev llvm libc6-dev libx11-dev libxcb1-dev libxext-dev zsync
+              apt install -y git curl wget ca-certificates xz-utils python3 build-essential libssl-dev liblzma-dev p7zip-full gcc g++ clang libclang-dev llvm libc6-dev libx11-dev libxcb1-dev libxext-dev zlib1g-dev zsync
     steps:
     - name: Install system build dependencies (${{ matrix.arch }})
       run: ${{ matrix.sys_deps }}
