@@ -18,9 +18,9 @@ const APP_DIR = path.join(__dirname, '..', '..', 'app');
 
 /**
  * Patch Zalo network state detection (gwig) and sync controller routing:
- * 1. Force getStateNetwork() to return CONNECTED for OUTSIDE callers so sync and
- *    calls proceed, while the manager's own state machine keeps reading the real
- *    stateCur. Its connectivity probe (_pingToDomain) is left as the original
+ * 1. Expose the real network state to callers, including offline startup, while
+ *    the manager's own state machine keeps reading stateCur.
+ *    Its connectivity probe (_pingToDomain) is left as the original
  *    real XHR check — NOT stubbed to always-resolve (upstream #87, never detects
  *    offline) and NOT tied to navigator.onLine (stays false after resume from
  *    suspend, leaving it stuck offline). The real probe fails when wifi is off
@@ -85,7 +85,8 @@ async function main() {
     ['networkConnected(){this.getStateNetwork()!==u.CONNECTED&&', 'networkConnected(){this.stateCur!==u.CONNECTED&&'],
     ['const n=()=>{this.getStateNetwork()===u.CHECKING?', 'const n=()=>{this.stateCur===u.CHECKING?'],
     ['t<=0?(this.getStateNetwork()===u.CONNECTED?', 't<=0?(this.stateCur===u.CONNECTED?'],
-    ['getStateNetwork(){return this.stateCur}', 'getStateNetwork(){return u.CONNECTED}']
+    // Also repair applications prepared with the old forced-connected patch.
+    ['getStateNetwork(){return u.CONNECTED}', 'getStateNetwork(){return this.stateCur}']
     // NOTE: _pingToDomain is deliberately NOT replaced. The original code probes
     // the real network (XHR). Both the upstream #87 stub (always resolve -> never
     // detects offline) and the earlier navigator.onLine variant (stays false after

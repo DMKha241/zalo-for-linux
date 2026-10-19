@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; media-src file:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nâng cao</title>
+  <link rel="stylesheet" href="../userscripts/manager.css">
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main id="advanced-view" class="settings-view" aria-labelledby="advanced-title">
+    <div class="settings-content">
+      <header class="settings-heading">
+        <span class="eyebrow">ZALO TRÊN LINUX</span>
+        <h1 id="advanced-title" tabindex="-1">Nâng cao</h1>
+        <p>Cá nhân hóa cuộc gọi và mở rộng Zalo theo cách của bạn.</p>
+      </header>
+      <section class="settings-card" aria-labelledby="sound-title">
+        <h2 id="sound-title">Âm thanh cuộc gọi</h2>
+        <p class="section-description">Chọn tệp âm thanh trên máy. Để trống đường dẫn để dùng âm thanh mặc định.</p>
+        <form class="sound-setting" data-sound="ringtone">
+          <label for="ringtone-path">Nhạc chuông <span>(ringtone)</span></label>
+          <p id="ringtone-description">Phát khi có cuộc gọi đến.</p>
+          <div class="path-row">
+            <input id="ringtone-path" name="path" placeholder="Mặc định của Zalo" aria-describedby="ringtone-description" autocomplete="off" spellcheck="false">
+            <button type="button" class="button" data-action="browse">Chọn tệp…</button>
+          </div>
+          <div class="sound-actions">
+            <button type="button" class="button" data-action="preview">Nghe thử</button>
+            <button type="button" class="button" data-action="reset">Mặc định</button>
+            <button type="submit" class="button primary">Lưu</button>
+          </div>
+          <span class="sound-status" role="status" aria-live="polite"></span>
+        </form>
+        <form class="sound-setting" data-sound="ringback">
+          <label for="ringback-path">Nhạc chờ <span>(ringback)</span></label>
+          <p id="ringback-description">Phát trên máy bạn trong lúc chờ người nhận trả lời.</p>
+          <div class="path-row">
+            <input id="ringback-path" name="path" placeholder="Mặc định của Zalo" aria-describedby="ringback-description" autocomplete="off" spellcheck="false">
+            <button type="button" class="button" data-action="browse">Chọn tệp…</button>
+          </div>
+          <div class="sound-actions">
+            <button type="button" class="button" data-action="preview">Nghe thử</button>
+            <button type="button" class="button" data-action="reset">Mặc định</button>
+            <button type="submit" class="button primary">Lưu</button>
+          </div>
+          <span class="sound-status" role="status" aria-live="polite"></span>
+        </form>
+        <p class="sound-hint">MP3, WAV, OGG, M4A, AAC, FLAC, OPUS, WEBM. Thay đổi áp dụng từ lần phát tiếp theo. Hãy giữ tệp ở đường dẫn đã chọn.</p>
+      </section>
+      <section class="settings-card userscripts-card" aria-labelledby="userscripts-title">
+        <div class="brand-icon" aria-hidden="true">&lt;/&gt;</div>
+        <div class="userscripts-description"><h2 id="userscripts-title">Userscript Manager</h2><p>Tạo, chỉnh sửa và quản lý các script chạy trong Zalo.</p></div>
+        <button id="open-userscripts" class="button">Mở trình quản lý <span aria-hidden="true">→</span></button>
+      </section>
+    </div>
+  </main>
+
+  <section id="userscripts-view" class="settings-view" aria-label="Userscript Manager" inert aria-hidden="true">
+    <header class="manager-navigation">
+      <button id="back-to-advanced" class="button" type="button">← Nâng cao</button>
+      <span>Userscript Manager</span>
+    </header>
+    <div class="manager-layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">&lt;/&gt;</div>
+      <div><h1>Userscripts</h1><p>Inject scripts vào Zalo</p></div>
+    </div>
+    <div class="toolbar">
+      <button id="create-button" class="button primary">+ Create</button>
+      <button id="import-button" class="button">Import file</button>
+    </div>
+    <label class="search"><span>⌕</span><input id="search-input" placeholder="Tìm userscript…"></label>
+    <div id="script-list" class="script-list"></div>
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">JS</div>
+      <strong>Chưa có userscript</strong>
+      <span>Tạo mới, paste code hoặc import file <code>.user.js</code>.</span>
+    </div>
+  </aside>
+
+  <main class="editor-pane">
+    <section id="welcome" class="welcome">
+      <div class="welcome-icon">{ }</div>
+      <h2>Userscripts manager</h2>
+      <p>Chọn một script để chỉnh sửa hoặc tạo userscript mới.</p>
+      <p class="warning">Userscript có toàn quyền truy cập nội dung Zalo. Chỉ chạy code mà bạn tin tưởng.</p>
+    </section>
+
+    <form id="editor" class="editor hidden">
+      <header class="editor-header">
+        <div class="name-field">
+          <label for="script-name">Tên userscript</label>
+          <input id="script-name" maxlength="160" required placeholder="My Zalo userscript">
+        </div>
+        <label class="toggle-label"><span>Enabled</span><input id="script-enabled" type="checkbox"><i></i></label>
+      </header>
+      <div class="editor-meta">
+        Hỗ trợ metadata Tampermonkey: <code>@name</code>, <code>@description</code>, <code>@version</code>,
+        <code>@match</code>, <code>@include</code>, <code>@exclude</code>.
+      </div>
+      <textarea id="script-code" spellcheck="false" aria-label="Userscript source code"></textarea>
+      <footer class="editor-footer">
+        <span id="status-text">Thay đổi được áp dụng từ lần tải trang Zalo tiếp theo.</span>
+        <div class="actions">
+          <button id="delete-button" type="button" class="button danger">Delete</button>
+          <button id="cancel-button" type="button" class="button">Cancel</button>
+          <button type="submit" class="button primary">Save</button>
+        </div>
+      </footer>
+    </form>
+  </main>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="../userscripts/manager.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

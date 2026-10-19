@@ -51,6 +51,8 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const incoming = require('./incoming');
+const { pathToFileURL } = require('url');
+const { createStore } = require('../advanced-settings/store');
 
 // Zalo's macOS call window, measured (CSS px = pt): voice 450x672, video and
 // group 640x400 (content, under the desktop's own title bar).
@@ -413,7 +415,18 @@ function onConnection(sock) {
 /** Opens the socket and exports ZCALL_UI_PORT / ZCALL_UI_TOKEN. Call before the engine starts. */
 function start() {
   if (server) return;
-  const { ipcMain } = require('electron');
+  const { ipcMain, app } = require('electron');
+  const soundStore = createStore(app.getPath('userData'));
+  const soundPages = ['call.html', 'incoming.html'].map((file) =>
+    pathToFileURL(path.join(__dirname, 'ui', file)).href);
+  ipcMain.handle('zcall-ui-sounds', (event) => {
+    const frame = event.senderFrame;
+    if (!frame || frame !== event.sender.mainFrame ||
+        !soundPages.includes(frame.url.split(/[?#]/)[0])) {
+      throw new Error('Call sound request was rejected.');
+    }
+    return soundStore.soundUrls();
+  });
   process.env.ZCALL_UI_TOKEN = crypto.randomBytes(16).toString('hex');
   server = net.createServer(onConnection);
   server.on('error', (e) => console.error('[zcall-window]', e.message));

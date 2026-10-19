@@ -44,7 +44,7 @@ function show(state, assetsDir) {
     return;
   }
   ready = false;
-  win = new BrowserWindow({
+  const notice = win = new BrowserWindow({
     ...place(state),
     useContentSize: true,
     frame: false,
@@ -60,27 +60,35 @@ function show(state, assetsDir) {
     // Local static page; the only remote content is the avatar image.
     webPreferences: { contextIsolation: false, nodeIntegration: true },
   });
-  win.zcallWindow = true; // main.js: closing it declines, it does not hide to the tray
-  win.setMenuBarVisibility(false);
-  win.webContents.on('did-finish-load', () => {
+  notice.zcallWindow = true; // main.js: closing it declines, it does not hide to the tray
+  notice.setMenuBarVisibility(false);
+  notice.webContents.on('did-finish-load', () => {
+    // The caller may have cancelled while the page was still loading.
+    if (win !== notice || notice.isDestroyed()) return;
     ready = true;
-    if (pending) win.webContents.send('zcall-incoming-state', pending);
-    win.showInactive();
+    if (pending) notice.webContents.send('zcall-incoming-state', pending);
+    notice.showInactive();
     // alwaysOnTop of the constructor does not reach a window shown later (X11:
     // no _NET_WM_STATE_ABOVE, the notice stayed under Zalo's main window).
-    win.setAlwaysOnTop(true);
-    win.moveTop();
-    win.flashFrame(true);
+    notice.setAlwaysOnTop(true);
+    notice.moveTop();
+    notice.flashFrame(true);
   });
-  win.on('closed', () => { win = null; ready = false; pending = null; });
-  win.loadFile(path.join(__dirname, 'ui', 'incoming.html'), { query: { assets: assetsDir } });
+  notice.on('closed', () => {
+    if (win !== notice) return;
+    win = null; ready = false; pending = null;
+  });
+  notice.loadFile(path.join(__dirname, 'ui', 'incoming.html'), { query: { assets: assetsDir } });
 }
 
 /** Closes the notice (answered, declined, cancelled). */
 function close() {
-  if (!win || win.isDestroyed()) return;
-  if (ready) win.webContents.send('zcall-incoming-stop');
-  win.destroy();
+  const notice = win;
+  const wasReady = ready;
+  win = null; ready = false; pending = null;
+  if (!notice || notice.isDestroyed()) return;
+  if (wasReady) notice.webContents.send('zcall-incoming-stop');
+  notice.destroy();
 }
 
 function isOpen() {

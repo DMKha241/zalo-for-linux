@@ -93,5 +93,10 @@
   },
   "dependencies": {
     "fs-extra": "^11.4.0"
+  },
+  "allowScripts": {
+    "electron@22.3.27": true,
+    "electron-winstaller@5.4.0": true,
+    "sqlite3@6.0.1": true
   }
 }

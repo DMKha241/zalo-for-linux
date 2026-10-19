@@ -30,6 +30,11 @@ const { VideoAssembler, avcCodecString } = require('./video');
 // A group ping error ends the call only after this long without media.
 const GROUP_MEDIA_IDLE_MS = 10000;
 
+// Zalo drops control events older than a minute. Within that window a cancel
+// can overtake its request, or polling can deliver the request again.
+const ENDED_CALL_TTL_MS = 60000;
+const MAX_ENDED_CALLS = 256;
+
 const CODEC = '[{"dynamicFptime":0,"frmPtime":20,"name":"opus/16000/1","payload":112}]\n';
 
 // JsonCpp writes keys sorted and ends with a newline; mirror that.
@@ -74,6 +79,7 @@ class EngineCore {
     this.log = log;
     this.ui = ui;
     this.call = null;
+    this.endedCalls = new Map();
     this.local = {};
     this.ui.onHangup(() => this.hangup('local'));
     if (typeof this.ui.onMute === 'function') {
@@ -338,6 +344,7 @@ class EngineCore {
       case 'cancel':
       case 'reject':
       case 'busy':
+        this._rememberEndedCall(d.callId);
         if (c && d.callId && String(d.callId) !== String(c.callId)) return; // another call
         this._peerEnded(act);
         return;
@@ -363,7 +370,29 @@ class EngineCore {
     }
   }
 
+  _rememberEndedCall(callId) {
+    const id = Number(callId);
+    if (!Number.isSafeInteger(id) || id <= 0) return;
+    this._pruneEndedCalls();
+    this.endedCalls.delete(id);
+    this.endedCalls.set(id, Date.now());
+    if (this.endedCalls.size > MAX_ENDED_CALLS) this.endedCalls.delete(this.endedCalls.keys().next().value);
+  }
+
+  _pruneEndedCalls() {
+    const cutoff = Date.now() - ENDED_CALL_TTL_MS;
+    for (const [id, endedAt] of this.endedCalls) {
+      if (endedAt > cutoff) break;
+      this.endedCalls.delete(id);
+    }
+  }
+
   _incoming(d) {
+    this._pruneEndedCalls();
+    if (this.endedCalls.has(Number(d.callId))) {
+      this.log('incoming request for an ended call; ignored');
+      return;
+    }
     if (this.call) { this.log('incoming call while in a call; ignored'); return; }
     this.groupNotice = null; // a group call notice gives way
     const params = parseMaybeJson(d.params);
@@ -1255,6 +1284,7 @@ class EngineCore {
   _finish(status, closeText) {
     const c = this.call;
     if (!c || c.state === 'ended') return;
+    this._rememberEndedCall(c.callId);
     const connected = c.state === 'connected';
     c.state = 'ended';
     const stats = (c.sessId && this.media.stats()) || {}; // no media before recvSignal 401

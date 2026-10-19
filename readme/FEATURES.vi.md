@@ -6,6 +6,17 @@ Tài liệu này giới thiệu các tính năng được bổ sung trong **Zalo
 
 ---
 
+## Mở Zalo khi không có internet
+
+Sau khi mở bản này online một lần với phiên đăng nhập được ghi nhớ, bạn có thể
+khởi động lại Zalo khi mất mạng để xem tài khoản gần nhất, lịch sử chat, danh bạ
+và nhóm đã lưu trên máy. Giao diện hiển thị trạng thái ngoại tuyến. Tin nhắn hoặc
+tệp đính kèm chưa từng tải về sẽ không xem được khi offline.
+
+Zalo tự thử xác thực lại ở nền. Khi máy chủ chấp nhận phiên đăng nhập, giao diện
+tự tải lại và tiếp tục đồng bộ. Đăng xuất hoặc bị máy chủ từ chối phiên đăng nhập
+sẽ xóa bản lưu phiên offline.
+
 ## 🙈 Khởi động ẩn xuống khay hệ thống
 
 Khi bạn bật **Settings → Launch Zalo on startup**, Zalo sẽ khởi động ở dạng thu
@@ -23,9 +34,20 @@ Bạn có thể mở lại cửa sổ từ biểu tượng ở khay hệ thống
 thông báo, hoặc mở Zalo thêm lần nữa. Nếu hệ thống không có khay hệ thống, cờ này
 sẽ bị bỏ qua để bạn không bao giờ bị "mất" cửa sổ.
 
+## ⚙️ Cài đặt nâng cao trên Linux
+
+Mở **Settings → Nâng cao...** để đổi nhạc chuông khi có cuộc gọi đến và nhạc chờ
+phát trên máy bạn khi gọi đi. Nhập đường dẫn tuyệt đối hoặc chọn tệp âm thanh,
+nghe thử rồi bấm **Lưu**. Nút **Mặc định** khôi phục âm thanh gốc của Zalo.
+Cấu hình được giữ sau khi khởi động lại và áp dụng từ lần phát tiếp theo. Nếu tệp
+bị mất hoặc không phát được, Zalo sẽ dùng âm thanh mặc định.
+
+Userscript Manager mở trong cùng cửa sổ, có hiệu ứng chuyển màn hình và nút quay
+lại Nâng cao. Nội dung đang sửa được giữ lại khi chuyển giữa hai màn hình.
+
 ## 🧩 Trình quản lý userscript
 
-Mở **Settings → Userscripts manager** để tạo, dán, sửa, nhập, xóa, và bật hoặc
+Mở **Settings → Nâng cao... → Userscript Manager** để tạo, dán, sửa, nhập, xóa, và bật hoặc
 tắt các script chạy bên trong Zalo. Các metadata theo kiểu Tampermonkey như
 `@name`, `@description`, `@version`, `@match`, `@include` và `@exclude` đều
 được nhận diện. Script nhập vào có thể dùng đuôi `.js` hoặc `.user.js`.
