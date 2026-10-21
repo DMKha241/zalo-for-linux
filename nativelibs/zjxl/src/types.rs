@@ -9,6 +9,11 @@ pub struct JxlInfo {
 }
 
 #[napi(object)]
+pub struct GetJxlInfoOptions {
+    pub buffer: Buffer,
+}
+
+#[napi(object)]
 pub struct JxlToJpegOptions {
     pub buffer: Buffer,
     pub quality: Option<f64>,
@@ -32,6 +37,16 @@ pub struct ResizeJxlOptions {
     pub buffer: Buffer,
     pub width: u32,
     pub height: u32,
+    pub max_threads: Option<u32>,
+    pub api_version: Option<i32>,
+}
+
+#[napi(object)]
+pub struct ResizeJxlLimitOptions {
+    pub buffer: Buffer,
+    pub width: u32,
+    pub height: u32,
+    pub limit: Option<u32>,
     pub max_threads: Option<u32>,
     pub api_version: Option<i32>,
 }
