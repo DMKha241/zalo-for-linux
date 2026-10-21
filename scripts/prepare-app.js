@@ -307,6 +307,8 @@ async function extractAppAsar() {
   const { main: patchNetworkAndSyncFix } = require('./patches/patch-network-and-sync-fix');
   await patchNetworkAndSyncFix();
 
+  await require('./patches/patch-offline-startup').main();
+
   const { main: patchAutoTheme } = require('./patches/patch-auto-theme');
   await patchAutoTheme();
 

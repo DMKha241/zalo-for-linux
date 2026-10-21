@@ -68,17 +68,41 @@ for (const [weight, file] of [['400', 'Regular'], ['600', 'Semibold'], ['700', '
 const playing = {};
 function playSound(name, loop) {
   if (playing[name]) return;
-  const a = new Audio(assetUrl(SOUND[name]));
-  a.loop = !!loop;
-  playing[name] = a;
-  a.addEventListener('ended', () => { if (playing[name] === a) delete playing[name]; });
-  a.play().catch(() => { delete playing[name]; });
+  const record = { audio: null };
+  playing[name] = record;
+  const defaultUrl = assetUrl(SOUND[name]);
+
+  function start(url) {
+    // The call may have been answered or cancelled while IPC was pending.
+    if (playing[name] !== record) return;
+    const a = new Audio(url);
+    record.audio = a;
+    a.loop = !!loop;
+    const failed = () => {
+      if (playing[name] !== record || record.audio !== a) return;
+      a.pause();
+      if (url !== defaultUrl) start(defaultUrl);
+      else delete playing[name];
+    };
+    a.addEventListener('error', failed, { once: true });
+    a.addEventListener('ended', () => {
+      if (playing[name] === record && record.audio === a) delete playing[name];
+    });
+    a.play().catch(failed);
+  }
+
+  if (name === 'ringtone' || name === 'ringback') {
+    // Resolve on every playback so an existing call window sees newly saved
+    // settings too. Missing / undecodable custom files fall back to Zalo.
+    require('electron').ipcRenderer.invoke('zcall-ui-sounds')
+      .then((urls) => start(urls[name] || defaultUrl), () => start(defaultUrl));
+  } else start(defaultUrl);
 }
 function stopSound(name) {
-  const a = playing[name];
-  if (!a) return;
+  const record = playing[name];
+  if (!record) return;
   delete playing[name];
-  a.pause();
+  if (record.audio) record.audio.pause();
 }
 
 window.zcallAssets = { assetUrl, setIcon, playSound, stopSound, params };

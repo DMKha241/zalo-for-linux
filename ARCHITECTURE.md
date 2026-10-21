@@ -40,7 +40,8 @@ zalo-for-linux/
 │   ├── screenshot # Calls the native screenshots module to capture the screen
 │   ├── start-hidden # Allows the app to start hidden in the tray
 │   ├── tray-host # Check if the host have a system tray, if it doesn't have, quit the app immediately
-│   ├── userscripts # Userscripts manager
+│   ├── advanced-settings # Linux settings window, call sounds and navigation
+│   ├── userscripts # Userscript storage, injection and editor
 │   ├── window-state # Check the window state for avoid disappearing window
 │   ├── zadark # Dark mode, privacy features, and additional functionality extension
 │   └── zcall # Engine launcher, call window (window.js + ui/call.*) and incoming notice (incoming.js + ui/incoming.*), laid out as Zalo for macOS

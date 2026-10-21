@@ -14,9 +14,7 @@ const IPC = {
   importFile: 'userscripts:import-file'
 };
 
-let BrowserWindowRef;
-let mainWindow;
-let managerWindow;
+let advancedSettings;
 let storePath;
 
 function parseMetadata(code) {
@@ -105,9 +103,7 @@ function publicScript(script) {
 }
 
 function assertManagerSender(event) {
-  if (!managerWindow || managerWindow.isDestroyed() || event.sender !== managerWindow.webContents) {
-    throw new Error('Userscripts request was rejected.');
-  }
+  advancedSettings.assertSender(event);
 }
 
 function globToRegExp(glob) {
@@ -192,34 +188,6 @@ function runEnabledScripts(win) {
   }
 }
 
-function openManager() {
-  if (managerWindow && !managerWindow.isDestroyed()) {
-    managerWindow.show();
-    managerWindow.focus();
-    return;
-  }
-
-  managerWindow = new BrowserWindowRef({
-    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
-    width: 980,
-    height: 680,
-    minWidth: 760,
-    minHeight: 520,
-    title: 'Userscripts manager',
-    backgroundColor: '#f4f6f8',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
-    }
-  });
-  managerWindow.setMenuBarVisibility(false);
-  if (managerWindow.removeMenu) managerWindow.removeMenu();
-  managerWindow.loadFile(path.join(__dirname, 'manager.html'));
-  managerWindow.on('closed', () => { managerWindow = null; });
-}
-
 function registerIpc(ipcMain) {
   ipcMain.handle(IPC.list, (event) => {
     assertManagerSender(event);
@@ -256,7 +224,7 @@ function registerIpc(ipcMain) {
   });
   ipcMain.handle(IPC.importFile, async (event) => {
     assertManagerSender(event);
-    const result = await dialog.showOpenDialog(managerWindow, {
+    const result = await dialog.showOpenDialog(advancedSettings.getWindow(), {
       title: 'Import userscript',
       properties: ['openFile'],
       filters: [
@@ -273,24 +241,15 @@ function registerIpc(ipcMain) {
   });
 }
 
-function register({ app, ipcMain, BrowserWindow }) {
-  BrowserWindowRef = BrowserWindow;
+function register({ app, ipcMain, advancedSettings: settings }) {
+  advancedSettings = settings;
   storePath = path.join(app.getPath('userData'), 'userscripts.json');
   registerIpc(ipcMain);
 
   app.on('browser-window-created', (_event, win) => {
-    if (!mainWindow && win.getTitle() !== 'Shared Worker') mainWindow = win;
-
-    win.on('page-title-updated', (event, title) => {
-      if (title !== 'USERSCRIPTS_MANAGER_TRIGGER') return;
-      event.preventDefault();
-      openManager();
-    });
     win.webContents.on('dom-ready', () => {
       const url = win.webContents.getURL();
       if (!url.includes('/pc-dist/index.html') && !url.includes('/pc-dist/child.html')) return;
-      const menuScript = fs.readFileSync(path.join(__dirname, 'inject-menu.js'), 'utf8');
-      win.webContents.executeJavaScript(menuScript, true).catch(() => {});
       runEnabledScripts(win);
     });
   });

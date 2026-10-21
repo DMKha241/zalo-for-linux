@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, Menu, Tray, ipcMain, screen, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -44,6 +44,7 @@ if (process.platform === 'linux') {
 const screenshotPlugin = require('./plugins/screenshot');
 const launcherBadgePlugin = require('./plugins/launcher-badge');
 const userscriptsPlugin = require('./plugins/userscripts');
+const advancedSettingsPlugin = require('./plugins/advanced-settings');
 const zcall = require('./plugins/zcall');
 const trayHost = require('./plugins/tray-host');
 const waylandTitlebarPlugin = require('./plugins/wayland-titlebar');
@@ -243,7 +244,9 @@ app.once('ready', () => {
 // Register plugins
   launcherBadgePlugin.register({ app, ipcMain });
   screenshotPlugin.register({ ipcMain });
-  userscriptsPlugin.register({ app, ipcMain, BrowserWindow });
+  const advancedSettings = advancedSettingsPlugin.register({ app, ipcMain, BrowserWindow, dialog });
+  userscriptsPlugin.register({ app, ipcMain, advancedSettings });
+  require('./plugins/offline').register({ app, ipcMain, appDir });
   waylandTitlebarPlugin.register({ app, ipcMain, BrowserWindow });
   zcall.start({ userDataDir: app.getPath('userData') });
 });
