@@ -839,7 +839,7 @@ async function sections(kind) {
   }
   if (kind === 'camera' || (kind === 'all' && state.video)) {
     const items = await cameras();
-    out.push({ kind: 'camera', title: 'Chọn camera', icon: 'camDisabled', items, current: curCamId || (await chosenCamera()) || (items[0] && items[0].id) });
+    out.push({ kind: 'camera', title: 'Chọn camera', icon: 'menuCam', items, current: curCamId || (await chosenCamera()) || (items[0] && items[0].id) });
   }
   return out;
 }
