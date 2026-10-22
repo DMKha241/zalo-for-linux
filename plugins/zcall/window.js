@@ -286,11 +286,11 @@ function ensureWindow() {
   let blurTimer = null;
   win.on('blur', () => {
     clearTimeout(blurTimer);
-    if (!sharingScreen || compact !== null || compacting || Date.now() - expandedAt < 1000) return;
+    if (!sharingScreen || compact !== null || compacting || Date.now() - expandedAt < 500) return;
     blurTimer = setTimeout(() => {
-      if (!win || win.isDestroyed() || win.isFocused() || !sharingScreen || compact !== null || compacting) return;
+      if (!win || win.isDestroyed() || !sharingScreen || compact !== null || compacting) return;
       setCompact(true).catch((e) => console.error('[zcall-window] compact on blur:', e.message));
-    }, 300);
+    }, 50);
   });
   win.on('focus', () => {
     clearTimeout(blurTimer);
@@ -565,14 +565,20 @@ function start() {
       updateAdvancedOptionsFromZalo(msg.data);
     }
   });
-  // The screen to share. With PipeWire capture (Wayland, see zcall.configure)
+  // The screen / window to share. With PipeWire capture (Wayland, see zcall.configure)
   // this asks the desktop's portal, which lets the user pick one.
-  ipcMain.handle('zcall-ui-screen-source', async () => {
+  ipcMain.handle('zcall-ui-screen-source', async (_e, preferredId) => {
+    sharingScreen = true;
     await compactJob; // out of full screen and compact before the portal's dialog opens
     const { desktopCapturer } = require('electron');
-    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } });
+    if (preferredId === 'window:select') {
+      const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
+      const s = sources.find((x) => x.id.startsWith('window:')) || sources[0];
+      return s ? s.id : 'window:0:0';
+    }
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
     const s = sources.find((x) => x.id.startsWith('screen:')) || sources[0];
-    return s ? s.id : null;
+    return s ? s.id : (preferredId || 'screen:0:0');
   });
   // Compact / expand, from the page. Picking the screen to share happens with
   // the window compact and focused: GNOME puts the portal's dialog right under

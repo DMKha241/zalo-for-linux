@@ -45,9 +45,17 @@ ipcRenderer.on('zcall-ui-fullscreen', (_e, on) => {
 });
 ipcRenderer.on('zcall-ui-compact', (_e, on) => {
   compactMode = on;
-  if (on && sharing) autoCompact = true;
+  if (on) closeMenu();
+  if (on && (sharing || pendingScreen)) autoCompact = true;
   document.body.classList.toggle('compact', on);
   render();
+});
+window.addEventListener('blur', () => {
+  if ((sharing || pendingScreen) && !compactMode) {
+    closeMenu();
+    autoCompact = true;
+    ipcRenderer.send('zcall-ui-window', 'compact');
+  }
 });
 
 function fmt(ms) {
@@ -384,7 +392,11 @@ $('cam').onclick = () => {
   if (!sharing) { if (camOn) startLocal(); else { stopLocal(); act('camera', { on: false }); } }
   render();
 };
-$('screen').onclick = () => { if (sharing) stopScreen(); else startScreen(); };
+$('screen').onclick = (e) => {
+  e.stopPropagation();
+  if (sharing) { stopScreen(); return; }
+  openMenu('share', $('screen')).catch(() => startScreen());
+};
 function b64(bytes) {
   let s = '';
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
@@ -535,8 +547,38 @@ function encodeFrame(frame, repeat) {
 // ends by itself.
 function runTrack(track, cap, onFirst, onEnd) {
   const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
-  let alive = true, first = true;
-  cap.stop = () => { alive = false; track.stop(); try { reader.cancel(); } catch (_) {} };
+  let alive = true, first = true, muteTimer = null;
+  const finish = () => {
+    if (!alive) return;
+    alive = false;
+    clearTimeout(muteTimer);
+    track.stop();
+    try { reader.cancel(); } catch (_) {}
+    if (onEnd) onEnd();
+  };
+  cap.stop = () => {
+    alive = false;
+    clearTimeout(muteTimer);
+    track.stop();
+    try { reader.cancel(); } catch (_) {}
+  };
+  track.onended = () => {
+    act('log', { text: 'capture track ended' });
+    finish();
+  };
+  track.onmute = () => {
+    if (!cap || !cap.isWindow || first) return;
+    clearTimeout(muteTimer);
+    muteTimer = setTimeout(() => {
+      if (alive && track.muted) {
+        act('log', { text: 'capture window closed (track muted)' });
+        finish();
+      }
+    }, 50);
+  };
+  track.onunmute = () => {
+    clearTimeout(muteTimer);
+  };
   (async () => {
     try {
       while (alive) {
@@ -548,7 +590,7 @@ function runTrack(track, cap, onFirst, onEnd) {
     } catch (err) {
       act('log', { text: 'capture stopped ' + ((err && err.message) || err || 'unknown') });
     }
-    if (alive && onEnd) onEnd();
+    finish();
   })();
 }
 // 1-1 rungs above 640 px and group layers above 640 px are cut from a 1280x720 capture.
@@ -609,9 +651,10 @@ async function startLocal() {
 // capture after a launch sometimes fails at once, the second works. So
 // that one is retried, once. While sharing, the window is compact.
 let pendingScreen = null;
-async function startScreen(attempt = 1) {
+async function startScreen(attempt = 1, targetSourceId = null) {
   if (sharing || (pendingScreen && attempt === 1)) return;
-  const cap = pendingScreen = { kind: 'screen', stop: () => {} };
+  const isWindow = targetSourceId === 'window:select' || (typeof targetSourceId === 'string' && targetSourceId.startsWith('window:'));
+  const cap = pendingScreen = { kind: 'screen', stop: () => {}, sourceId: targetSourceId, isWindow };
   const t0 = performance.now();
   const giveUp = (why) => {
     if (pendingScreen !== cap) return;
@@ -619,16 +662,19 @@ async function startScreen(attempt = 1) {
     cap.stop();
     act('log', { text: 'screen share attempt ' + attempt + ': ' + why });
     if (attempt === 1 && why !== 'timeout' && performance.now() - t0 < 3000 && state.phase === 'connected') {
-      setTimeout(() => startScreen(2), 300);
+      setTimeout(() => startScreen(2, targetSourceId), 300);
       return;
     }
+    act('screen', { on: false });
     if (autoCompact) { autoCompact = false; ipcRenderer.send('zcall-ui-window', 'expand'); }
   };
-  if (attempt === 1 && !compactMode) { autoCompact = true; ipcRenderer.send('zcall-ui-window', 'compact'); }
+  if (!compactMode) { autoCompact = true; ipcRenderer.send('zcall-ui-window', 'compact'); }
   let stream;
   try {
-    const id = await ipcRenderer.invoke('zcall-ui-screen-source');
+    const id = await ipcRenderer.invoke('zcall-ui-screen-source', targetSourceId);
     if (!id) throw new Error('no screen source');
+    cap.sourceId = id;
+    if (typeof id === 'string' && id.startsWith('window:')) cap.isWindow = true;
     stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
       chromeMediaSource: 'desktop', chromeMediaSourceId: id, maxWidth: 1920, maxHeight: 1080, maxFrameRate: PROFILES.screen.fps } } });
   } catch (e) {
@@ -654,6 +700,7 @@ async function startScreen(attempt = 1) {
   }, () => { if (local === cap) stopScreen(); else giveUp('ended before a frame'); });
 }
 function stopScreen() {
+  if (pendingScreen) { pendingScreen.stop(); pendingScreen = null; }
   if (!sharing) return;
   sharing = false;
   if (autoCompact) { autoCompact = false; ipcRenderer.send('zcall-ui-window', 'expand'); }
@@ -842,6 +889,16 @@ async function sections(kind) {
     const items = await cameras();
     out.push({ kind: 'camera', title: 'Chọn camera', icon: 'menuCam', items, current: curCamId || (await chosenCamera()) || (items[0] && items[0].id) });
   }
+  if (kind === 'share') {
+    out.push({
+      kind: 'share',
+      noHeader: true,
+      items: [
+        { id: 'screen:0:0', label: 'Toàn màn hình' },
+        { id: 'window:select', label: 'Chọn cửa sổ' },
+      ],
+    });
+  }
   return out;
 }
 async function openMenu(kind, anchor) {
@@ -850,10 +907,12 @@ async function openMenu(kind, anchor) {
   menu.textContent = '';
   secs.forEach((sec, i) => {
     if (i) { const l = document.createElement('div'); l.className = 'sep'; menu.appendChild(l); }
-    const h = document.createElement('div'); h.className = 'h';
-    const hi = document.createElement('img'); setIcon(hi, sec.icon);
-    h.append(hi, sec.title); menu.appendChild(h);
-    if (!sec.items.length) { const r = document.createElement('div'); r.className = 'h'; r.textContent = 'Không tìm thấy thiết bị'; menu.appendChild(r); }
+    if (!sec.noHeader && sec.title) {
+      const h = document.createElement('div'); h.className = 'h';
+      const hi = document.createElement('img'); setIcon(hi, sec.icon);
+      h.append(hi, sec.title); menu.appendChild(h);
+      if (!sec.items.length) { const r = document.createElement('div'); r.className = 'h'; r.textContent = 'Không tìm thấy thiết bị'; menu.appendChild(r); }
+    }
     for (const it of sec.items) {
       const r = document.createElement('div'); r.className = 'it'; r.title = it.label;
       if (it.id === sec.current) { const ck = document.createElement('img'); setIcon(ck, 'check'); r.appendChild(ck); }
@@ -863,10 +922,15 @@ async function openMenu(kind, anchor) {
     }
     if (sec.kind === 'mic' && Number.isFinite(state.micVolume)) menu.appendChild(micVolumeRow());
   });
-  // Right edge 19 past the pill (as measured on Zalo's micro menu), inside the window.
-  const r = anchor.getBoundingClientRect();
-  const right = Math.min(window.innerWidth - 8, Math.max(318, r.right + 19));
-  menu.style.left = (right - 310) + 'px';
+  if (kind === 'share') {
+    menu.style.left = '8px';
+    menu.style.width = '180px';
+  } else {
+    menu.style.width = '';
+    const r = anchor.getBoundingClientRect();
+    const right = Math.min(window.innerWidth - 8, Math.max(318, r.right + 19));
+    menu.style.left = (right - 310) + 'px';
+  }
   menu.dataset.kind = kind;
   menu.classList.add('show');
   document.querySelectorAll('.caret').forEach((b) => b.classList.toggle('open', b.dataset.kind === kind));
@@ -914,6 +978,7 @@ ipcRenderer.on('zcall-ui-mic-level', (_e, level) => {
 });
 
 function pick(kind, it) {
+  if (kind === 'share') { startScreen(1, it.id); return; }
   act('device', { kind, id: it.id, label: it.label });
   if (kind !== 'camera') return;
   camPref = { id: it.id, label: it.label };
