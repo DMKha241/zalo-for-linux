@@ -45,6 +45,7 @@ ipcRenderer.on('zcall-ui-fullscreen', (_e, on) => {
 });
 ipcRenderer.on('zcall-ui-compact', (_e, on) => {
   compactMode = on;
+  if (on && sharing) autoCompact = true;
   document.body.classList.toggle('compact', on);
   render();
 });
