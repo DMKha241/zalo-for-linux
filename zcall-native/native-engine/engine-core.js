@@ -565,6 +565,7 @@ class EngineCore {
     const c = this.call;
     if (!c || c.state !== 'connected' || typeof this.ui.video !== 'function') return;
     if (c.group) {
+      if (pkt.ssrc === c.localUid || (c.shareScreenId && pkt.ssrc === c.shareScreenId)) return;
       // One stream per member: the window shows one tile per src (UID).
       if (!c.videos) c.videos = new Map();
       let v = c.videos.get(pkt.ssrc);
@@ -740,6 +741,9 @@ class EngineCore {
         if (!(id > 0)) return;
         const prev = c.shareScreenId || 0;
         c.shareScreenId = id;
+        c.members.delete(id);
+        if (c.videos) c.videos.delete(id);
+        this._groupStatus();
         if (c.sharing && prev !== id) this._screenShare(true);
         return;
       }
@@ -1175,7 +1179,7 @@ class EngineCore {
 
   _groupMember(uid, info) {
     const c = this.call;
-    if (!c || !c.group || uid === c.localUid) return;
+    if (!c || !c.group || uid === c.localUid || (c.shareScreenId && uid === c.shareScreenId)) return;
     const m = c.members.get(uid) || { name: '' };
     const next = { ...m, ...info };
     if (!next.name && c.invitePartners && c.invitePartners.length === 1) Object.assign(next, c.invitePartners[0]);
@@ -1191,7 +1195,7 @@ class EngineCore {
     const c = this.call;
     if (!c || !c.group || typeof this.ui.members !== 'function') return;
     const list = [...c.members.entries()]
-      .filter(([, m]) => m.state === 'incall' || m.state === 'ringing')
+      .filter(([uid, m]) => (m.state === 'incall' || m.state === 'ringing') && (!c.shareScreenId || uid !== c.shareScreenId))
       .map(([uid, m]) => ({ src: uid, name: m.name || '', avatar: m.avatar || '', muted: !!m.muted, camOff: !!m.camOff, state: m.state }));
     const key = JSON.stringify(list);
     if (key === c.membersKey) return;
@@ -1201,7 +1205,7 @@ class EngineCore {
 
   _groupMemberIn(uid) {
     const c = this.call;
-    if (c && c.group && uid !== c.localUid && (c.members.get(uid) || {}).state !== 'incall') this._groupMember(uid, { state: 'incall' });
+    if (c && c.group && uid !== c.localUid && (!c.shareScreenId || uid !== c.shareScreenId) && (c.members.get(uid) || {}).state !== 'incall') this._groupMember(uid, { state: 'incall' });
   }
 
   // The server's list of who is in the room (cmd 50).
@@ -1210,7 +1214,7 @@ class EngineCore {
     if (!c || !c.group) return;
     const inRoom = new Set(uids);
     for (const uid of inRoom) {
-      if (uid === c.localUid) continue;
+      if (uid === c.localUid || (c.shareScreenId && uid === c.shareScreenId)) continue;
       if ((c.members.get(uid) || {}).state !== 'incall') this._groupGreet(uid);
       this._groupMember(uid, { state: 'incall' });
     }
@@ -1221,7 +1225,7 @@ class EngineCore {
 
   _groupMemberLeft(uid, why) {
     const c = this.call;
-    if (!c || !c.group || uid === c.localUid) return;
+    if (!c || !c.group || uid === c.localUid || (c.shareScreenId && uid === c.shareScreenId)) return;
     const m = c.members.get(uid);
     if (!m || m.state === 'left') return;
     this.log('group member left:', uid, why);
@@ -1234,7 +1238,7 @@ class EngineCore {
   _groupCheckEmpty(why) {
     const c = this.call;
     if (!c || !c.group || c.state !== 'connected') return;
-    const others = [...c.members.values()].filter((m) => m.state === 'incall' || m.state === 'ringing');
+    const others = [...c.members.entries()].filter(([uid, m]) => (m.state === 'incall' || m.state === 'ringing') && (!c.shareScreenId || uid !== c.shareScreenId));
     if (!others.length) { this.log('group call: nobody left', why); this._groupHangup('alone'); }
   }
 
@@ -1242,7 +1246,7 @@ class EngineCore {
     const c = this.call;
     if (!c || !c.group || c.state !== 'connected') return;
     this._groupMembersToUi();
-    const names = [...c.members.values()].filter((m) => m.state === 'incall').map((m) => m.name || 'Thành viên');
+    const names = [...c.members.entries()].filter(([uid, m]) => m.state === 'incall' && (!c.shareScreenId || uid !== c.shareScreenId)).map(([, m]) => m.name || 'Thành viên');
     const waiting = c.role === 'caller' && !c.answered ? 'Đang đổ chuông…' : 'Đang chờ người khác…';
     const text = names.length ? `${names.length + 1} người: Bạn, ${names.join(', ')}` : waiting;
     if (text !== c.statusText) { c.statusText = text; this.ui.status(text, c.startedAt); }

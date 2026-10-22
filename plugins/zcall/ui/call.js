@@ -297,7 +297,7 @@ function syncMembers(list) {
     }
     tileVideoState(t);
   }
-  for (const [key, t] of [...tiles]) if (t.fromList && !keep.has(key)) dropTile(key);
+  for (const [key] of [...tiles]) if (!keep.has(key)) dropTile(key);
   layoutTiles();
 }
 new MutationObserver(placeSelf).observe(document.body, { attributes: true, attributeFilter: ['class'] });
