@@ -77,6 +77,7 @@ function render() {
   document.title = 'Zalo Call - ' + name;
   for (const p of ['outgoing', 'connecting', 'connected', 'ended']) document.body.classList.toggle('phase-' + p, s.phase === p);
   document.body.classList.toggle('is-video', !!s.video);
+  document.body.classList.toggle('is-sharing', sharing);
   $('status').textContent = s.phase === 'connected' && !ended ? '' : (s.text || '');
   $('peerName').textContent = name;
   const av = $('avatar'), bg = $('bg');
@@ -909,6 +910,7 @@ async function openMenu(kind, anchor) {
     if (i) { const l = document.createElement('div'); l.className = 'sep'; menu.appendChild(l); }
     if (!sec.noHeader && sec.title) {
       const h = document.createElement('div'); h.className = 'h';
+      h.dataset.kind = sec.kind;
       const hi = document.createElement('img'); setIcon(hi, sec.icon);
       h.append(hi, sec.title); menu.appendChild(h);
       if (!sec.items.length) { const r = document.createElement('div'); r.className = 'h'; r.textContent = 'Không tìm thấy thiết bị'; menu.appendChild(r); }

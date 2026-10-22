@@ -134,11 +134,15 @@ body.has-tiles #stage { display: block; }
 /* --- the bottom bar --- */
 #bar { position: absolute; left: 0; right: 0; bottom: 0; height: var(--bar-h); background: var(--bar-bg); }
 #bar .mid { position: absolute; left: 50%; top: 5px; transform: translateX(-50%); display: flex; gap: 20px; align-items: center; }
-.pill { display: flex; width: 80px; height: 40px; border-radius: 20px; background: var(--pill-bg); box-shadow: inset 0 0 0 1px var(--pill-border); }
-.pill > button { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 20px; }
+.pill { display: flex; width: 80px; height: 40px; border-radius: 20px; background: var(--pill-bg); box-shadow: inset 0 0 0 1px var(--pill-border); transition: background 0.15s ease, box-shadow 0.15s ease; }
+.pill:has(> button:first-child:not(:disabled):hover) { background: #2c2c2c; box-shadow: inset 0 0 0 1px #484848; }
+.pill:has(> button:first-child:not(:disabled):hover) > .caret:not(:disabled) img { filter: brightness(1.15); }
+.pill > button { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 20px; transition: background 0.15s ease, filter 0.15s ease; }
 .pill > button > img { width: 44px; height: 44px; }
 .pill > .caret > img { width: 38px; height: 38px; }
+.pill > .caret:not(:disabled):hover { background: rgba(255, 255, 255, 0.16); }
 .pill > .caret.open { background: rgba(255, 255, 255, 0.28); }
+.pill > .caret.open:hover { background: rgba(255, 255, 255, 0.32); }
 #end { width: 40px; height: 40px; border-radius: 50%; }
 #end img { width: 40px; height: 40px; }
 #end:hover img, .pill > button:not(:disabled):hover { filter: brightness(1.15); }
@@ -168,6 +172,9 @@ body:not(.phase-connected) #full, body.is-video:not(.has-video):not(.has-tiles) 
 #menu .h, #menu .it { position: relative; height: 30px; line-height: 30px; padding: 0 16px 0 45px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #menu .h { color: var(--menu-muted); cursor: default; }
 #menu .h img { position: absolute; left: 16px; top: 5px; width: 20px; height: 20px; opacity: 0.6; }
+#menu .h[data-kind="mic"] img { left: 15px; top: 5px; width: 22px; height: 22px; }
+#menu .h[data-kind="speaker"] img { left: 16px; top: 5px; width: 20px; height: 20px; }
+#menu .h[data-kind="camera"] img { left: 17px; top: 6px; width: 18px; height: 18px; }
 #menu .it { cursor: pointer; }
 #menu .it:hover { background: var(--menu-hover); }
 #menu .it img { position: absolute; left: 18px; top: 8px; width: 14px; height: 14px; }
@@ -185,6 +192,7 @@ body:not(.phase-connected) #full, body.is-video:not(.has-video):not(.has-tiles) 
 
 /* --- compact: a small tile with the picture, end call and expand --- */
 body.compact #pip, body.compact .notes, body.compact .tool, body.compact #camPill, body.compact #peerName { display: none !important; }
+body.compact.is-sharing #screen { display: flex !important; }
 body.compact #bar .mid { gap: 12px; }
 body.compact #menu {
   left: 6px !important;
@@ -196,6 +204,9 @@ body.compact #menu {
 }
 body.compact #menu .h, body.compact #menu .it { height: 26px; line-height: 26px; padding-left: 36px; }
 body.compact #menu .h img { left: 10px; top: 4px; width: 18px; height: 18px; }
+body.compact #menu .h[data-kind="mic"] img { left: 9px; top: 4px; width: 20px; height: 20px; }
+body.compact #menu .h[data-kind="speaker"] img { left: 10px; top: 4px; width: 18px; height: 18px; }
+body.compact #menu .h[data-kind="camera"] img { left: 11px; top: 5px; width: 16px; height: 16px; }
 body.compact #menu .it img { left: 12px; top: 7px; width: 12px; height: 12px; }
 body.compact #menu .vol { padding: 4px 12px 6px 36px; }
 body.compact #menu .volHint { display: none; }
