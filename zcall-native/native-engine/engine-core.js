@@ -440,14 +440,15 @@ class EngineCore {
     this.emit({ type: 'sendSignal', command: 407, data: { callId: c.callId, callerId: c.peerId } });
     const kind = c.type === 3 ? 'Cuộc gọi video đến' : 'Cuộc gọi thoại đến';
     this.ui.incoming({ title: c.peerName || 'Zalo', text: kind, avatar: c.avatar, video: c.type === 3 },
-      () => this.answer(), (why) => this.reject(why));
+      (camStartOff) => this.answer(camStartOff), (why) => this.reject(why));
   }
 
   // Callee picks up: InitZRTP to the caller's server first, so that 402 can
   // carry our P2P candidates (the phone ignores our P2P binding without them).
-  answer() {
+  answer(camStartOff = false) {
     const c = this.call;
     if (!c || c.role !== 'callee' || c.state !== 'incoming') return;
+    if (camStartOff) c.cameraOff = true;
     c.state = 'connected';
     c.startedAt = Date.now();
     this.emit({ type: 'request', command: 'action', data: { id: 5 } });
@@ -485,6 +486,7 @@ class EngineCore {
       if (!best && this.media.sendUdp) { this.ui.status('Không kết nối được máy chủ'); this.hangup('no-server'); return; }
       this.media.start('callee', c.server.rtpaddr);
       this.ui.status('Đã kết nối', c.startedAt);
+      if (c.cameraOff) this._camMic(false);
     });
   }
 
@@ -1053,12 +1055,14 @@ class EngineCore {
     this.emit({ type: 'sendSignal', command: 12439, data: { callId: c.callId, data: jsonCpp({ callType: 1, extraData: '', status: 1 }), hostCall: c.hostCall, session: c.sessId, status: 1 } });
     const host = (c.members.get(c.hostCall) || {}).name || d.Dname || 'Ai đó';
     this.ui.incoming({ title: c.title, text: `${host} mời bạn vào cuộc gọi nhóm`, inviter: host, avatar: c.avatar, video: true },
-      () => this._groupAnswer(), (why) => this._groupReject(why));
+      (camStartOff) => this._groupAnswer(camStartOff), (why) => this._groupReject(why));
   }
 
-  _groupAnswer() {
+  _groupAnswer(camStartOff = false) {
     const c = this.call;
     if (!c || !c.group || c.state !== 'incoming') return;
+    c.cameraOn = !camStartOff;
+    if (this.media.setGroupCamera) this.media.setGroupCamera(!camStartOff);
     c.state = 'connecting';
     this.media.onNegotiated({
       muted: !!c.muted,
@@ -1074,8 +1078,8 @@ class EngineCore {
       localUid: c.localUid,
       hostCall: c.hostCall,
     });
-    this._groupCameraProfile();
     this.ui.status('Đang kết nối…');
+    this._groupCameraProfile();
     this.media.prepare('callee').then((best) => {
       if (this.call !== c || c.state !== 'connecting') return;
       if (!best && this.media.sendUdp) {

@@ -176,7 +176,7 @@ class ElectronCallUi {
   _onAction(m) {
     switch (m.action) {
       case 'accept':
-        if (this.incomingCb) { const c = this.incomingCb; this.incomingCb = null; c.onAccept(); }
+        if (this.incomingCb) { const c = this.incomingCb; this.incomingCb = null; c.onAccept(!!m.camStartOff); }
         return;
       case 'reject':
         if (this.incomingCb) { const c = this.incomingCb; this.incomingCb = null; c.onReject(m.why || 'reject'); }

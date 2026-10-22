@@ -313,7 +313,9 @@ ipcRenderer.on('zcall-ui-state', (_e, s) => {
   state = s || {};
   cameraEncode = state.cameraEncode || null;
   screenEncode = state.screenEncode || null;
-  if (!camChosen && state.phase) { camChosen = true; if (state.camStartOff) camOn = false; }
+  if (state.phase === 'ended' || before === 'ended') { camChosen = false; camOn = true; }
+  if (state.camStartOff && !camChosen) { camOn = false; camChosen = true; }
+  if (!camChosen && state.phase === 'connected') camChosen = true;
   if (state.phase === 'connected' && state.members) syncMembers(state.members); // group tiles
   if (Number.isFinite(state.micVolume)) micVolumeShown(state.micVolume);
   if (state.phase !== 'connected') {
@@ -377,6 +379,7 @@ function sendProfile() {
 $('cam').onclick = () => {
   if (noCamera) return;
   camOn = !camOn;
+  camChosen = true;
   if (!sharing) { if (camOn) startLocal(); else { stopLocal(); act('camera', { on: false }); } }
   render();
 };

@@ -407,16 +407,16 @@ async function onEngineMessage(m) {
         return;
       }
       lastState = m;
-      camStartOff = false;
+      if (!incoming.isOpen()) camStartOff = false;
       incoming.show(m, ASSETS_DIR);
       return;
     }
     if (incoming.isOpen()) {
       incoming.close();
       // Missed or declined before answering: nothing else to show.
-      if (m.phase === 'ended') { lastState = null; return; }
+      if (m.phase === 'ended') { lastState = null; camStartOff = false; return; }
     }
-    if (m.phase === 'outgoing') camStartOff = false;
+    if (m.phase === 'outgoing' || m.phase === 'ended') camStartOff = false;
     const state = camStartOff ? { ...m, camStartOff: true } : m;
     const first = !lastState || lastState.phase === 'ended' || lastState.phase === 'incoming';
     const w = ensureWindow();
@@ -438,6 +438,7 @@ async function onEngineMessage(m) {
     enterVideoMode();
     win.webContents.send('zcall-ui-video', m);
   } else if (m.type === 'close') {
+    camStartOff = false;
     if (incoming.isOpen()) incoming.close();
     if (!win || win.isDestroyed()) { lastState = null; return; }
     pushState({ ...(lastState || {}), phase: 'ended', text: m.text || 'Đã kết thúc' });
@@ -574,7 +575,7 @@ function start() {
   // The notice's answer: accept, maybe with the camera off; the call window opens with the next state.
   ipcMain.on('zcall-incoming-answer', (_e, opts) => {
     camStartOff = !!(opts && opts.camStartOff);
-    send({ action: 'accept' });
+    send({ action: 'accept', camStartOff });
   });
   ipcMain.on('zcall-ui-action', (_e, action) => {
     if (!action || typeof action.action !== 'string') return;
