@@ -93,7 +93,7 @@ let prefs = null;
 
 function loadPrefs() {
   if (prefs) return prefs;
-  prefs = { mic: '', speaker: '', camera: null };
+  prefs = { mic: '', speaker: '', camera: null, noMicBlock: false, noSpeakerBlock: false };
   try {
     prefsFile = path.join(require('electron').app.getPath('userData'), 'zcall-devices.json');
     Object.assign(prefs, JSON.parse(fs.readFileSync(prefsFile, 'utf8')));
@@ -117,13 +117,18 @@ async function listAudio(kind) {
   const json = await pactl(['-f', 'json', 'list', kind]);
   let list = [];
   try {
-    list = JSON.parse(json).map((d) => ({ id: d.name, label: d.description || d.name }));
+    const i = json.indexOf('[');
+    const parsed = JSON.parse(i >= 0 ? json.slice(i) : json);
+    list = parsed.map((d) => ({
+      id: d.name,
+      label: (d.description && d.description !== '(null)' ? d.description : d.name) || d.name,
+    }));
   } catch (_) {
     // pactl without -f json (PulseAudio < 16): names only.
     list = (await pactl(['list', 'short', kind])).split('\n').map((l) => l.split('\t')[1]).filter(Boolean).map((n) => ({ id: n, label: n }));
   }
-  // Not the monitors, nor the engine's own processed devices (zcall_ec_*: picking them would loop).
-  return list.filter((d) => !d.id.endsWith('.monitor') && !d.id.startsWith('zcall_ec_'));
+  // Not the monitors, nor the engine's own processed devices (zcall_ec_*: picking them would loop), nor remote network sinks (raop AirPlay), nor null labels.
+  return list.filter((d) => !d.id.endsWith('.monitor') && !d.id.startsWith('zcall_ec_') && !d.id.startsWith('raop_sink.') && d.label !== '(null)');
 }
 
 async function audioDevices() {
@@ -131,6 +136,95 @@ async function audioDevices() {
     listAudio('sources'), listAudio('sinks'), pactl(['get-default-source']), pactl(['get-default-sink']),
   ]);
   return { mics, speakers, defaultMic: defMic.trim(), defaultSpeaker: defSpeaker.trim(), prefs: loadPrefs() };
+}
+
+async function listVideo(sender) {
+  const win = (sender && !sender.isDestroyed() ? sender : null) ||
+              (require('electron').BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && !w.zcallWindow) || {}).webContents;
+  if (!win || win.isDestroyed()) return [];
+  try {
+    return await win.executeJavaScript(
+      `navigator.mediaDevices.enumerateDevices().then(ds => ds.filter(d => d.kind === 'videoinput').map((d, i) => ({ id: d.deviceId, name: d.label || ('Camera ' + (i + 1)), guid: d.deviceId })))`
+    );
+  } catch (_) { return []; }
+}
+
+async function getZaloDeviceList(sender) {
+  const d = await audioDevices();
+  const cams = await listVideo(sender);
+  const p = loadPrefs();
+
+  const otherAudInputDevice = d.mics.map((m) => ({ id: m.id, name: m.label, guid: m.id }));
+  const otherAudOutputDevice = d.speakers.map((s) => ({ id: s.id, name: s.label, guid: s.id }));
+  const otherVidDevice = cams;
+
+  const defaultAudInputDevice = p.mic
+    ? (otherAudInputDevice.find((m) => m.id === p.mic) || { id: p.mic, name: p.mic, guid: p.mic })
+    : (otherAudInputDevice.find((m) => m.id === d.defaultMic) || otherAudInputDevice[0] || null);
+
+  const defaultAudOutputDevice = p.speaker
+    ? (otherAudOutputDevice.find((s) => s.id === p.speaker) || { id: p.speaker, name: p.speaker, guid: p.speaker })
+    : (otherAudOutputDevice.find((s) => s.id === d.defaultSpeaker) || otherAudOutputDevice[0] || null);
+
+  const defaultVidDevice = cams.length
+    ? (cams.find((c) => p.camera && (c.id === p.camera.id || c.name === p.camera.label)) || cams[0])
+    : null;
+
+  return {
+    autoAudioInput: !p.mic,
+    autoAudioOutput: !p.speaker,
+    defaultAudInputDevice,
+    defaultAudOutputDevice,
+    defaultVidDevice,
+    otherAudInputDevice,
+    otherAudOutputDevice,
+    otherVidDevice,
+  };
+}
+
+function updateDevicesFromZalo(data) {
+  if (!data || typeof data !== 'object') return;
+  const p = loadPrefs();
+  if (data.autoAudioInput !== undefined) {
+    p.mic = data.autoAudioInput ? '' : (data.defaultAudInputDevice && data.defaultAudInputDevice.id ? String(data.defaultAudInputDevice.id) : '');
+  } else if (data.defaultAudInputDevice && data.defaultAudInputDevice.id) {
+    p.mic = String(data.defaultAudInputDevice.id);
+  }
+  if (data.autoAudioOutput !== undefined) {
+    p.speaker = data.autoAudioOutput ? '' : (data.defaultAudOutputDevice && data.defaultAudOutputDevice.id ? String(data.defaultAudOutputDevice.id) : '');
+  } else if (data.defaultAudOutputDevice && data.defaultAudOutputDevice.id) {
+    p.speaker = String(data.defaultAudOutputDevice.id);
+  }
+  if (data.defaultVidDevice && data.defaultVidDevice.id) {
+    p.camera = { id: String(data.defaultVidDevice.id), label: String(data.defaultVidDevice.name || '') };
+  }
+  savePrefs();
+  sendDevicePrefs();
+}
+
+function updateAdvancedOptionsFromZalo(data) {
+  if (!data || typeof data !== 'object') return;
+  const p = loadPrefs();
+  let changed = false;
+  if (data.receiveCallWhileNoMicrophoneDetected !== undefined) {
+    const val = data.receiveCallWhileNoMicrophoneDetected === false;
+    if (p.noMicBlock !== val) { p.noMicBlock = val; changed = true; }
+  }
+  if (data.receiveCallWhileNoSpeakerDetected !== undefined) {
+    const val = data.receiveCallWhileNoSpeakerDetected === false;
+    if (p.noSpeakerBlock !== val) { p.noSpeakerBlock = val; changed = true; }
+  }
+  if (changed) savePrefs();
+}
+
+async function shouldBlockIncoming() {
+  const p = loadPrefs();
+  if (p.noMicBlock || p.noSpeakerBlock) {
+    const d = await audioDevices();
+    if (p.noMicBlock && (!d.mics || d.mics.length === 0)) return true;
+    if (p.noSpeakerBlock && (!d.speakers || d.speakers.length === 0)) return true;
+  }
+  return false;
 }
 
 function sendDevicePrefs() {
@@ -304,10 +398,14 @@ async function setCompact(on) {
   win.focus();
 }
 
-function onEngineMessage(m) {
+async function onEngineMessage(m) {
   if (m.type === 'state') {
     // Incoming: the notice in the screen's corner, not the call window.
     if (m.phase === 'incoming') {
+      if (await shouldBlockIncoming()) {
+        send({ action: 'reject', why: 'no-device' });
+        return;
+      }
       lastState = m;
       camStartOff = false;
       incoming.show(m, ASSETS_DIR);
@@ -434,6 +532,21 @@ function start() {
     process.env.ZCALL_UI_PORT = String(server.address().port);
   });
   ipcMain.handle('zcall-ui-devices', () => audioDevices());
+  ipcMain.on('call-send-to-native', async (event, msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.command === 'listDevice') {
+      if (!msg.data) {
+        event.sender.send('call-response-listDevice', await getZaloDeviceList(event.sender));
+      } else {
+        updateDevicesFromZalo(msg.data);
+      }
+    } else if (msg.command === 'advancedOptions') {
+      updateAdvancedOptionsFromZalo(msg.data);
+    } else if (msg.command === 'init' && msg.data) {
+      updateDevicesFromZalo(msg.data);
+      updateAdvancedOptionsFromZalo(msg.data);
+    }
+  });
   // The screen to share. With PipeWire capture (Wayland, see zcall.configure)
   // this asks the desktop's portal, which lets the user pick one.
   ipcMain.handle('zcall-ui-screen-source', async () => {

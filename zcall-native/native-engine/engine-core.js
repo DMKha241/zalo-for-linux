@@ -166,7 +166,6 @@ class EngineCore {
       case 'makeCall': return this._makeCall(data);
       case 'endCall': return this.hangup('zalo');
       case 'listDevice':
-        this.emit({ type: 'response', command: 'listDevice', data: { audioIn: [], audioOut: [], video: [] } });
         return;
       case 'ping':
       case 'hide':
@@ -317,9 +316,17 @@ class EngineCore {
     const d = data.data || {};
     if (typeof act === 'string' && act.startsWith('group_')) {
       if (this.groupEnabled) this._onGroupControl(act, d);
-      else if (act === 'group_request') this._incomingGroup(d);
+      else {
+        if (act === 'group_request') this._incomingGroup(d);
+        else if (this.groupNotice) {
+          clearTimeout(this.groupNotice);
+          this.groupNotice = null;
+          this.ui.close('Đã bỏ qua cuộc gọi nhóm');
+        }
+      }
       return;
     }
+    const callId = (d && (d.callId ?? d.id)) ?? (data && (data.callId ?? data.id));
     switch (act) {
       case 'request': // incoming 1-1 call
         return this._incoming(d);
@@ -327,6 +334,13 @@ class EngineCore {
         if (c && c.state === 'calling') { c.state = 'ringing'; this.ui.status('Đang đổ chuông…'); }
         return;
       case 'answer': {
+        if (callId !== undefined) this._rememberEndedCall(callId);
+        if (c && callId !== undefined && String(callId) !== String(c.callId)) return;
+        if (c && c.state === 'incoming') {
+          this.log('incoming call handled on another device (answer)');
+          this._finish(0, null, { signals: false });
+          return;
+        }
         if (!c || c.role !== 'caller' || c.state === 'connected') return;
         const params = parseMaybeJson(d.params);
         // A declining phone also sends "answer", with status 3 and no
@@ -344,8 +358,13 @@ class EngineCore {
       case 'cancel':
       case 'reject':
       case 'busy':
-        this._rememberEndedCall(d.callId);
-        if (c && d.callId && String(d.callId) !== String(c.callId)) return; // another call
+        if (callId !== undefined) this._rememberEndedCall(callId);
+        if (c && callId !== undefined && String(callId) !== String(c.callId)) return; // another call
+        if (c && c.state === 'incoming') {
+          this.log('incoming call ended before answer:', act);
+          this._finish(0, null, { signals: false });
+          return;
+        }
         this._peerEnded(act);
         return;
       case 'answer_ack':
@@ -474,6 +493,10 @@ class EngineCore {
     const c = this.call;
     if (!c || c.role !== 'callee' || c.state !== 'incoming') return;
     this.log('reject:', why);
+    if (why === 'no-device') {
+      this._finish(0, null, { signals: false });
+      return;
+    }
     this.emit({ type: 'request', command: 'action', data: { id: 8 } });
     this.emit({
       type: 'sendSignal',
@@ -691,7 +714,10 @@ class EngineCore {
       }
       case '409': // ack of our 409/405 (the call is already finished then)
       case '405':
-        if (c && c.state !== 'ended') this._peerEnded(`recvSignal ${command}`);
+        if (c && c.state !== 'ended') {
+          if (c.state === 'incoming') this._finish(0, null, { signals: false });
+          else this._peerEnded(`recvSignal ${command}`);
+        }
         return;
       case '402':
       case '407':
@@ -806,6 +832,11 @@ class EngineCore {
         if (who && who !== c.localUid) this._groupMember(who, { state: Number(d.callState) === 3 ? 'incall' : 'ringing', muted: Number(d.audioState) === 1, camOff: Number(d.videoState) === 1 });
         return;
       case 'group_answer':
+        if (c.state === 'incoming' && (!who || who === c.localUid)) {
+          this.log('group call over before we answered: answered on another device');
+          this._groupFinish(0, 'Cuộc gọi nhóm đã kết thúc', { signals: false });
+          return;
+        }
         if (who && who !== c.localUid) { this._groupMember(who, { state: 'incall' }); this._groupGreet(who); }
         return;
       // fromId = the member being rung, receiverId = us (log 2026-10-01).
@@ -1281,7 +1312,7 @@ class EngineCore {
     this.call = null;
   }
 
-  _finish(status, closeText) {
+  _finish(status, closeText, { signals = true } = {}) {
     const c = this.call;
     if (!c || c.state === 'ended') return;
     this._rememberEndedCall(c.callId);
@@ -1291,26 +1322,28 @@ class EngineCore {
     this.media.stop();
     const duration = connected ? Math.round((Date.now() - c.startedAt) / 1000) : 0;
     const role = c.role === 'caller';
-    this.emit({ type: 'update', command: 'bubble', data: { duration, partnerId: c.peerId, role } });
-    this.emit({
-      type: 'sendSignal',
-      command: 406,
-      data: {
-        callId: c.callId,
-        data: JSON.stringify({
-          Codec: ['opus/16000/1', '20'],
-          NewZRTC: 1,
-          RxTotalPkt: stats.rx || 0,
-          SrtpMode: 1,
-          TxTotalPkt: stats.tx || 0,
-          sysInfo: 'native-engine',
-        }),
-        duration,
-        partnerId: c.peerId,
-        role,
-        status,
-      },
-    });
+    if (signals) {
+      this.emit({ type: 'update', command: 'bubble', data: { duration, partnerId: c.peerId, role } });
+      this.emit({
+        type: 'sendSignal',
+        command: 406,
+        data: {
+          callId: c.callId,
+          data: JSON.stringify({
+            Codec: ['opus/16000/1', '20'],
+            NewZRTC: 1,
+            RxTotalPkt: stats.rx || 0,
+            SrtpMode: 1,
+            TxTotalPkt: stats.tx || 0,
+            sysInfo: 'native-engine',
+          }),
+          duration,
+          partnerId: c.peerId,
+          role,
+          status,
+        },
+      });
+    }
     this.emit({ type: 'update', command: 'callState', data: { state: 'free' } });
     this.ui.close(closeText || (connected ? `Kết thúc — ${duration} s` : 'Đã kết thúc'));
     this.call = null;

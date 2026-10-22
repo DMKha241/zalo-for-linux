@@ -67,7 +67,7 @@ const THEME_MAIN_INJECTION = `
   }
 
   syncTheme();
-  // Poll host portal changes too: sandbox GSettings monitors may stay silent.
+  // Poll host portal: sandbox GSettings monitors may stay silent.
   // isLinuxDark() blocks the main process, so poll sparingly.
   let _quitting = false;
   let _poll = null;
