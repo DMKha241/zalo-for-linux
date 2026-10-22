@@ -810,7 +810,10 @@ async function cameras() {
 async function chosenCamera() {
   if (!camPref) return null;
   const cams = await cameras();
-  const m = cams.find((c) => c.id === camPref.id) || cams.find((c) => camPref.label && c.label === camPref.label);
+  const prefName = (camPref.label || '').split(':')[0].trim().toLowerCase();
+  const m = cams.find((c) => c.id === camPref.id) ||
+            cams.find((c) => camPref.label && c.label === camPref.label) ||
+            cams.find((c) => prefName && c.label.toLowerCase().includes(prefName));
   return m ? m.id : null;
 }
 function closeMenu() {

@@ -166,7 +166,6 @@ class EngineCore {
       case 'makeCall': return this._makeCall(data);
       case 'endCall': return this.hangup('zalo');
       case 'listDevice':
-        this.emit({ type: 'response', command: 'listDevice', data: { audioIn: [], audioOut: [], video: [] } });
         return;
       case 'ping':
       case 'hide':
@@ -494,6 +493,10 @@ class EngineCore {
     const c = this.call;
     if (!c || c.role !== 'callee' || c.state !== 'incoming') return;
     this.log('reject:', why);
+    if (why === 'no-device') {
+      this._finish(0, null, { signals: false });
+      return;
+    }
     this.emit({ type: 'request', command: 'action', data: { id: 8 } });
     this.emit({
       type: 'sendSignal',
