@@ -439,7 +439,7 @@ async function onEngineMessage(m) {
     const w = ensureWindow();
     pushState(state);
     w.setTitle('Zalo Call - ' + (m.name || 'Zalo'));
-    if (m.video) enterVideoMode();
+    if (m.video || m.group) enterVideoMode();
     if (first) {
       w.show();
       w.focus();

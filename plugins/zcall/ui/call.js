@@ -14,7 +14,29 @@ const { ipcRenderer } = require('electron');
 const { setIcon, playSound, stopSound, params } = window.zcallAssets;
 const $ = (id) => document.getElementById(id);
 const TEST_PATTERN = params.get('test') === '1';
-let state = {}; let tick = null;
+
+// Global state variables
+let state = {};
+let tick = null;
+let compactMode = false, autoCompact = false;
+let fullScreen = false;
+let groupLayout = 'grid', pinned = null, talking = null;
+const tiles = new Map();
+let cameraEncode = null, screenEncode = null;
+let camChosen = false;
+let camOn = true, prevCamOn = true, noCamera = false, sharing = false, local = null, enc = null, nFrames = 0, nextDue = 0, encErrLogged = false;
+let camPref = null, curCamId = '';
+let capFps = 0;
+let forceKey = true, lastKeyAt = 0;
+let scaler = null, scalerG = null;
+let groupProfile = null, groupKey = '';
+let groupScreen = null, groupScreenKey = '';
+let held = null, heldAt = 0, repeatAt = 0;
+let pendingScreen = null;
+let dec = null, decCodec = null, ts = 0;
+let decErrLogged = false, shown = 0, shownSince = 0, shownTotal = 0, rxBytes = 0;
+let micSlider = null, micMeter = null, micPct = null, micDragging = false, micSentAt = 0, micTimer = null;
+
 const act = (action, extra) => ipcRenderer.send('zcall-ui-action', Object.assign({ action }, extra || {}));
 
 $('end').onclick = () => act('hangup');
@@ -30,10 +52,8 @@ $('layout').onclick = () => {
   }
   document.body.classList.toggle('split');
 };
-let compactMode = false, autoCompact = false;
 $('compactBtn').onclick = () => { autoCompact = false; ipcRenderer.send('zcall-ui-window', compactMode ? 'expand' : 'compact'); };
 // Full screen (video and group): the bar's button, F11, a double click on the picture; Esc leaves it.
-let fullScreen = false;
 const toggleFull = () => { if (state.video && !compactMode) ipcRenderer.send('zcall-ui-window', 'fullscreen'); };
 $('full').onclick = toggleFull;
 $('main').addEventListener('dblclick', (e) => { if (!e.target.closest('button')) toggleFull(); });
@@ -78,14 +98,28 @@ function render() {
   for (const p of ['outgoing', 'connecting', 'connected', 'ended']) document.body.classList.toggle('phase-' + p, s.phase === p);
   document.body.classList.toggle('is-video', !!s.video);
   document.body.classList.toggle('is-sharing', sharing);
+  if (s.group) {
+    document.body.classList.add('has-tiles');
+  } else {
+    document.body.classList.remove('has-tiles', 'conference');
+  }
   $('status').textContent = s.phase === 'connected' && !ended ? '' : (s.text || '');
   $('peerName').textContent = name;
   const av = $('avatar'), bg = $('bg');
   if (s.avatar) {
     const url = 'url("' + String(s.avatar).replace(/["\\\n]/g, '') + '")';
-    av.style.backgroundImage = url; bg.style.backgroundImage = url; av.textContent = '';
+    av.style.backgroundImage = url; av.textContent = '';
   } else {
-    av.style.backgroundImage = ''; bg.style.backgroundImage = ''; av.textContent = name.trim().charAt(0).toUpperCase();
+    av.style.backgroundImage = ''; av.textContent = name.trim().charAt(0).toUpperCase();
+  }
+  // Call audio: use self's blurred avatar as background instead of peer's.
+  // Call video when cam is off: use peer's avatar as blurred background.
+  const isAudioCall = !s.video && !s.group;
+  const bgAvatar = isAudioCall ? (s.selfAvatar || s.avatar) : (s.avatar || s.selfAvatar);
+  if (bgAvatar) {
+    bg.style.backgroundImage = 'url("' + String(bgAvatar).replace(/["\\\n]/g, '') + '")';
+  } else {
+    bg.style.backgroundImage = '';
   }
   // The peer's camera off: drop its last (frozen) frame, show the avatar.
   if (s.peerCamOff) document.body.classList.remove('has-video');
@@ -98,12 +132,13 @@ function render() {
   // Micro: on / off. Camera: only in a video call (grey in a voice call, as in Zalo).
   setIcon($('micIcon'), s.muted ? 'micOff' : 'mic');
   $('mute').title = s.muted ? 'Bật micro' : 'Tắt micro';
-  const camUsable = !!s.video && !noCamera;
+  const camUsable = (!!s.video || !!s.group) && !noCamera && !sharing;
   $('cam').disabled = !camUsable;
-  $('camCaret').disabled = !s.video;
+  $('camCaret').disabled = !(s.video || s.group) || sharing;
   setIcon($('camIcon'), !camUsable ? 'camDisabled' : (camOn ? 'cam' : 'camOff'));
-  setIcon($('camCaret').firstElementChild, s.video ? 'caret' : 'caretDisabled');
-  $('cam').title = noCamera ? 'Không có camera' : (camOn ? 'Tắt camera' : 'Bật camera');
+  setIcon($('camCaret').firstElementChild, ((s.video || s.group) && !sharing) ? 'caret' : 'caretDisabled');
+  $('cam').title = sharing ? 'Đang chia sẻ màn hình' : (noCamera ? 'Không có camera' : (camOn ? 'Tắt camera' : 'Bật camera'));
+  $('camCaret').title = sharing ? 'Đang chia sẻ màn hình' : 'Chọn camera';
   setIcon($('screenIcon'), sharing ? 'shareOff' : 'share');
   $('screen').title = sharing ? 'Dừng chia sẻ màn hình' : 'Chia sẻ màn hình';
   const tilesOn = document.body.classList.contains('has-tiles');
@@ -114,26 +149,56 @@ function render() {
   clearInterval(tick);
   const upd = () => { $('timer').textContent = s.since && !ended ? fmt(Date.now() - s.since) : ''; };
   upd(); if (s.since && !ended) tick = setInterval(upd, 500);
+  if (s.group) {
+    placeSelf();
+    updateSelfTile();
+  }
 }
 
 // Group: our camera is a tile like the others (first), 1-1 it is the 170x96 corner view.
 const selfTile = document.createElement('div');
-selfTile.className = 'tile';
+selfTile.className = 'tile novideo';
+selfTile.dataset.src = 'self';
+selfTile.title = 'Bấm để ghim / bỏ ghim';
 // The pin mark of a pinned tile (Zalo's pin.svg, through setIcon: the assets' path).
 function pinMark() { const img = document.createElement('img'); img.className = 'pinMark'; img.alt = ''; setIcon(img, 'pin'); return img; }
 selfTile.appendChild(pinMark());
-const selfLabel = document.createElement('span');
-selfLabel.className = 'label';
-selfLabel.textContent = 'Bạn';
+
+const selfAvBg = document.createElement('div'); selfAvBg.className = 'tavbg';
+const selfAv = document.createElement('div'); selfAv.className = 'tav';
+const selfLabel = document.createElement('span'); selfLabel.className = 'label';
+const selfName = document.createElement('span'); selfName.className = 'name'; selfName.textContent = 'Bạn';
+const selfMic = document.createElement('img'); selfMic.className = 'micx hide'; selfMic.alt = ''; setIcon(selfMic, 'micMuted');
+selfLabel.append(selfName, selfMic);
+selfTile.append(selfAvBg, selfAv, selfLabel);
+
+function updateSelfTile() {
+  if (!state.group) return;
+  const hasVideo = (sharing || (camOn && !noCamera)) && document.body.classList.contains('has-self');
+  selfTile.classList.toggle('novideo', !hasVideo);
+  if (state.selfAvatar) {
+    const url = 'url("' + String(state.selfAvatar).replace(/["\\\n]/g, '') + '")';
+    selfAv.style.backgroundImage = url;
+    selfAvBg.style.backgroundImage = url;
+    selfAv.textContent = '';
+  } else {
+    selfAv.style.backgroundImage = '';
+    selfAvBg.style.backgroundImage = '';
+    selfAv.textContent = 'B';
+  }
+  selfMic.classList.toggle('hide', !state.muted);
+}
+
 function placeSelf() {
   const self = $('self');
-  const group = document.body.classList.contains('has-tiles');
-  if (group && document.body.classList.contains('has-self')) {
-    if (self.parentNode !== selfTile) { selfTile.append(self, selfLabel); }
-    if (selfTile.parentNode !== $('stage')) $('stage').prepend(selfTile);
+  const isGroup = !!state.group;
+  if (isGroup) {
+    if (self.parentNode !== selfTile) { selfTile.insertBefore(self, selfLabel); }
+    if (selfTile.parentNode !== $('stage')) { $('stage').prepend(selfTile); }
+    updateSelfTile();
   } else {
-    if (self.parentNode !== $('pip')) $('pip').prepend(self);
-    if (selfTile.parentNode) selfTile.remove();
+    if (self.parentNode !== $('pip')) { $('pip').prepend(self); }
+    if (selfTile.parentNode) { selfTile.remove(); }
   }
   layoutTiles();
 }
@@ -151,7 +216,6 @@ function placeSelf() {
 //   height on its blurred picture), and every cell its name and a muted micro.
 const CELL_RATIO = 820 / 482, THUMB_RATIO = 437 / 285, COLUMN_SHARE = 437 / 1996;
 const GRID_GAP = 4, COLUMN_GAP = 8, THUMB_GAP = 4, COLUMN_RIGHT = 2, AVATAR_SHARE = 0.35; // COLUMN_RIGHT: 5 px (2x) right of the column
-let groupLayout = 'grid', pinned = null, talking = null;
 function tileKey(box) { return box === selfTile ? 'self' : box.dataset.src; }
 function videoRatio(box) {
   const c = box.querySelector('canvas');
@@ -163,9 +227,19 @@ function place(box, x, y, w, h) {
   // Fill when the video has the cell's orientation, else whole (macOS: the phone's
   // portrait in a landscape cell has black sides, a landscape camera fills).
   const c = box.querySelector('canvas');
-  if (c) c.style.objectFit = (videoRatio(box) >= 1) === (w >= h) ? 'cover' : 'contain';
+  if (c) c.style.objectFit = (sharing && box === selfTile) ? 'contain' : ((videoRatio(box) >= 1) === (w >= h) ? 'cover' : 'contain');
   const av = box.querySelector('.tav');
-  if (av) { const d = Math.round(h * AVATAR_SHARE); av.style.width = d + 'px'; av.style.height = d + 'px'; av.style.fontSize = Math.round(d * 0.4) + 'px'; }
+  if (av) {
+    const d = Math.round(h * AVATAR_SHARE);
+    av.style.width = d + 'px';
+    av.style.height = d + 'px';
+    av.style.fontSize = Math.round(d * 0.4) + 'px';
+    const status = box.querySelector('.tstatus');
+    if (status) {
+      status.style.top = Math.round(h / 2 + d / 2 + Math.max(4, Math.min(8, h * 0.04))) + 'px';
+      status.style.fontSize = Math.max(11, Math.min(14, Math.round(d * 0.22))) + 'px';
+    }
+  }
 }
 // _calculateColRowFromWindowSize: the column count that gives the largest cell.
 function gridLayout(boxes, W, H) {
@@ -202,6 +276,7 @@ function layoutTiles() {
   const boxes = Array.from(stage.children);
   if (!boxes.length) return;
   const W = stage.clientWidth, H = stage.clientHeight;
+  if (W <= 0 || H <= 0) return;
   const conference = groupLayout === 'conference' && boxes.length > 1;
   document.body.classList.toggle('conference', conference);
   let main = null;
@@ -248,14 +323,15 @@ function ensureTile(key) {
   box.title = 'Bấm để ghim / bỏ ghim';
   const avbg = document.createElement('div'); avbg.className = 'tavbg';
   const av = document.createElement('div'); av.className = 'tav';
+  const status = document.createElement('div'); status.className = 'tstatus';
   const label = document.createElement('span'); label.className = 'label';
   const name = document.createElement('span'); name.className = 'name';
-  const mic = document.createElement('img'); mic.className = 'micx'; mic.alt = ''; setIcon(mic, 'micMuted');
+  const mic = document.createElement('img'); mic.className = 'micx hide'; mic.alt = ''; setIcon(mic, 'micMuted');
   label.append(name, mic);
-  box.append(avbg, av, c, label, pinMark());
+  box.append(avbg, av, status, c, label, pinMark());
   $('stage').appendChild(box);
   t = { box, canvas: c, g: c.getContext('2d'), dec: null, codec: null, ts: 0, errLogged: false, sentW: 0, ro: null, rt: 0,
-    name, mic, av, avbg, avatar: '', camOff: false, hasFrame: false };
+    name, mic, av, avbg, status, avatar: '', camOff: false, hasFrame: false };
   tiles.set(key, t);
   // The engine asks the server for the layer that fits this tile (macOS does the same
   // from the tile's render width): tell it the width in pixels, and again when it changes.
@@ -266,7 +342,7 @@ function ensureTile(key) {
   };
   t.ro = new ResizeObserver(() => { if (!t.rt) t.rt = setTimeout(reportWidth, 300); });
   t.ro.observe(box);
-  document.body.classList.add('has-tiles');
+  if (state.group) document.body.classList.add('has-tiles');
   placeSelf();
   return t;
 }
@@ -296,7 +372,13 @@ function syncMembers(list) {
     keep.add(key);
     const t = ensureTile(key);
     t.fromList = true;
-    t.name.textContent = (m.name || 'Thành viên') + (m.state === 'ringing' ? ' (đang gọi…)' : '');
+    t.name.textContent = m.name || 'Thành viên';
+    let stText = '';
+    if (m.state === 'calling') stText = 'Đang gọi…';
+    else if (m.state === 'ringing') stText = 'Đang đổ chuông…';
+    else if (m.state === 'busy') stText = 'Bận';
+    else if (m.state === 'declined') stText = 'Từ chối';
+    t.status.textContent = stText;
     t.mic.classList.toggle('hide', !m.muted);
     t.camOff = !!m.camOff;
     if ((m.avatar || '') !== t.avatar) {
@@ -316,28 +398,38 @@ new MutationObserver(placeSelf).observe(document.body, { attributes: true, attri
 // picked from the phone's loss reports (send-rate.js), with keyMs (key frames on the
 // phone's request, plus one every 10 s) and captureBig (capture 1280x720 for rungs
 // above 640 px). open() omits the key, which clears it; status() keeps it.
-let cameraEncode = null, screenEncode = null;
-let camChosen = false; // camStartOff ("Trả lời không mở camera") applies once per call
 ipcRenderer.on('zcall-ui-state', (_e, s) => {
   const before = state.phase;
   state = s || {};
   cameraEncode = state.cameraEncode || null;
   screenEncode = state.screenEncode || null;
-  if (state.phase === 'ended' || before === 'ended') { camChosen = false; camOn = true; }
-  if (state.camStartOff && !camChosen) { camOn = false; camChosen = true; }
+  if (state.phase === 'ended' || before === 'ended') { camChosen = false; camOn = true; prevCamOn = true; }
+  if (state.camStartOff && !camChosen) { camOn = false; prevCamOn = false; camChosen = true; }
   if (!camChosen && state.phase === 'connected') camChosen = true;
-  if (state.phase === 'connected' && state.members) syncMembers(state.members); // group tiles
+  if (state.group) {
+    document.body.classList.add('has-tiles');
+    placeSelf();
+    if (state.members) syncMembers(state.members);
+  }
   if (Number.isFinite(state.micVolume)) micVolumeShown(state.micVolume);
-  if (state.phase !== 'connected') {
+  if (state.phase === 'ended') {
     stopVideo(); stopLocal(); sharing = false;
     if (pendingScreen) { pendingScreen.stop(); pendingScreen = null; }
   }
-  else if (state.video && camOn && !local && !sharing) startLocal();
+  else if (!state.video && !state.group) {
+    if (local && !sharing) stopLocal();
+  }
+  else if ((state.video || state.group) && camOn && !local && !sharing) {
+    startLocal();
+  }
   else if (local && local.kind === 'camera' && !sharing && local.big !== undefined && local.big !== wantBigCapture()) {
     act('log', { text: 'camera capture size changes: restart' });
     stopLocal(); startLocal();
   }
-  else if (state.video && !camOn && before !== 'connected') act('camera', { on: false });
+  else if ((state.video || state.group) && !camOn && !sharing) {
+    if (local && local.kind === 'camera') stopLocal();
+    if (before !== 'connected' && state.phase === 'connected') act('camera', { on: false });
+  }
   sounds(before);
   render();
 });
@@ -345,9 +437,7 @@ ipcRenderer.on('zcall-ui-state', (_e, s) => {
 // --- what we send (camera or screen): capture, preview, H.264 encode, frames to the engine ---
 const self = $('self'); const sg = self.getContext('2d');
 // local: the capture running, { kind: 'camera' | 'screen', stop }.
-let camOn = true, noCamera = false, sharing = false, local = null, enc = null, nFrames = 0, nextDue = 0, encErrLogged = false;
-let camPref = null, curCamId = ''; // saved choice { id, label }; the camera in use
-let capFps = 0; // frame rate the camera says it delivers (0: unknown)
+// (camOn, noCamera, sharing, local, enc, etc. declared at top)
 // Encoder settings per source. Level 3.0 (avc1.42E01E) holds 640 px: a
 // 1920x1080 camera (Iriun) encoded as is never shows on the phone. The
 // screen needs level 4.0 (avc1.42E028) for 1280 px at any aspect ratio.
@@ -356,11 +446,6 @@ const PROFILES = {
   screen: { fps: 10, maxSide: 1280, bitrate: 1500000, codec: 'avc1.42E028' }
 };
 const KEY_MS = 2000; // screen, and the camera until the engine's profile came
-let forceKey = true, lastKeyAt = 0; // key frame now (engine asked: start, PLI) / every keyMs
-let scaler = null, scalerG = null;
-// One object per layer-0 key, so the encoder is not reconfigured every frame.
-let groupProfile = null, groupKey = '';
-let groupScreen = null, groupScreenKey = '';
 function sendProfile() {
   if (sharing) {
     // Group: the server's limit on the shorter side and bitrate (engine screenEncode).
@@ -387,10 +472,12 @@ function sendProfile() {
   return groupProfile;
 }
 $('cam').onclick = () => {
-  if (noCamera) return;
+  if (noCamera || sharing) return;
   camOn = !camOn;
+  prevCamOn = camOn;
   camChosen = true;
-  if (!sharing) { if (camOn) startLocal(); else { stopLocal(); act('camera', { on: false }); } }
+  if (camOn) startLocal(); else { stopLocal(); act('camera', { on: false }); }
+  updateSelfTile();
   render();
 };
 $('screen').onclick = (e) => {
@@ -429,7 +516,7 @@ setInterval(() => { if (local) txReport(performance.now()); }, 5000);
 // frame is encoded again, REPEAT_FPS times a second, after REPEAT_AFTER_MS
 // without a new one (the key frame interval still applies).
 const REPEAT_AFTER_MS = 600, REPEAT_FPS = 4;
-let held = null, heldAt = 0, repeatAt = 0;
+// held, heldAt, repeatAt declared at top
 function holdFrame(frame) {
   if (held) try { held.close(); } catch (_) {}
   held = null;
@@ -522,7 +609,10 @@ function encodeFrame(frame, repeat) {
     }
     if (self.width !== w || self.height !== h) { self.width = w; self.height = h; if (selfTile.parentNode) layoutTiles(); }
     sg.drawImage(src, 0, 0);
-    document.body.classList.add('has-self');
+    if (!document.body.classList.contains('has-self')) {
+      document.body.classList.add('has-self');
+      updateSelfTile();
+    }
     if (enc.encodeQueueSize >= 3) tx.full++;
     if (enc.encodeQueueSize < 3) {
       tx.enc++;
@@ -651,7 +741,7 @@ async function startLocal() {
 // A failure within 3 s of the click is not the user cancelling: the first
 // capture after a launch sometimes fails at once, the second works. So
 // that one is retried, once. While sharing, the window is compact.
-let pendingScreen = null;
+// pendingScreen declared at top
 async function startScreen(attempt = 1, targetSourceId = null) {
   if (sharing || (pendingScreen && attempt === 1)) return;
   const isWindow = targetSourceId === 'window:select' || (typeof targetSourceId === 'string' && targetSourceId.startsWith('window:'));
@@ -690,12 +780,14 @@ async function startScreen(attempt = 1, targetSourceId = null) {
     pendingScreen = null;
     act('log', { text: 'screen share started (attempt ' + attempt + ')' });
     if (!compactMode) { autoCompact = true; ipcRenderer.send('zcall-ui-window', 'compact'); }
+    prevCamOn = camOn;
     stopLocal(); // the camera
     sharing = true;
     forceKey = true;
     local = cap;
     act('screen', { on: true });
     act('camera', { on: true }); // the phone shows our video only while it thinks the camera is on
+    updateSelfTile();
     render();
     return true;
   }, () => { if (local === cap) stopScreen(); else giveUp('ended before a frame'); });
@@ -707,7 +799,13 @@ function stopScreen() {
   if (autoCompact) { autoCompact = false; ipcRenderer.send('zcall-ui-window', 'expand'); }
   stopLocal();
   act('screen', { on: false });
-  if (camOn && state.phase === 'connected') startLocal(); else act('camera', { on: false });
+  camOn = prevCamOn;
+  if (camOn && (state.video || state.group) && !noCamera && state.phase === 'connected') {
+    startLocal();
+  } else {
+    act('camera', { on: false });
+  }
+  updateSelfTile();
   render();
 }
 function stopLocal() {
@@ -725,9 +823,7 @@ function stopLocal() {
 // two people sharing one decoder errors after a few frames and the last
 // picture stays up.
 const canvas = $('video'); const g = canvas.getContext('2d');
-let dec = null, decCodec = null, ts = 0;
-let decErrLogged = false, shown = 0, shownSince = 0, shownTotal = 0, rxBytes = 0;
-const tiles = new Map();
+// (dec, decCodec, ts, tiles, etc. declared at top)
 // 1-1: the decoder broke (or a decode call threw): say so, and ask the phone for a key frame
 // (the engine sends the PLI), instead of staying on the last picture until the next one.
 function decoderBroke(why, failed) {
@@ -740,11 +836,13 @@ function stopVideo() {
   if (dec && dec.state !== 'closed') try { dec.close(); } catch (_) {}
   dec = null; decCodec = null;
   decErrLogged = false; shown = 0; shownSince = 0; shownTotal = 0;
-  for (const key of [...tiles.keys()]) dropTile(key);
-  pinned = null; talking = null; groupLayout = 'grid';
-  document.body.classList.remove('has-video', 'has-tiles', 'conference');
-  placeSelf();
-  $('stage').textContent = '';
+  if (state.phase === 'ended' || !state.group) {
+    for (const key of [...tiles.keys()]) dropTile(key);
+    pinned = null; talking = null; groupLayout = 'grid';
+    document.body.classList.remove('has-video', 'has-tiles', 'conference');
+    placeSelf();
+    $('stage').textContent = '';
+  }
 }
 const DECODE_QUEUE_MAX = 3; // past this, another delta only makes the smear later
 function frameBytes(m) {
@@ -886,7 +984,7 @@ async function sections(kind) {
       });
     }
   }
-  if (kind === 'camera' || (kind === 'all' && state.video)) {
+  if ((kind === 'camera' && !sharing) || (kind === 'all' && state.video && !sharing)) {
     const items = await cameras();
     out.push({ kind: 'camera', title: 'Chọn camera', icon: 'menuCam', items, current: curCamId || (await chosenCamera()) || (items[0] && items[0].id) });
   }
@@ -903,6 +1001,7 @@ async function sections(kind) {
   return out;
 }
 async function openMenu(kind, anchor) {
+  if (kind === 'camera' && sharing) return;
   if (menu.dataset.kind === kind) { closeMenu(); return; }
   const secs = await sections(kind);
   menu.textContent = '';
@@ -941,7 +1040,7 @@ async function openMenu(kind, anchor) {
 // its automatic step-down stops once this is used). The meter is the loudest
 // 100 ms of what we send: red from -9 dBFS, where a voice starts to clip.
 const MIC_HOT_DBOV = 9;
-let micSlider = null, micMeter = null, micPct = null, micDragging = false, micSentAt = 0, micTimer = null;
+// micSlider, micMeter, micPct, etc. declared at top
 function micVolumeRow() {
   const row = document.createElement('div'); row.className = 'vol';
   const title = document.createElement('div'); title.className = 'volTitle';
@@ -981,6 +1080,7 @@ ipcRenderer.on('zcall-ui-mic-level', (_e, level) => {
 
 function pick(kind, it) {
   if (kind === 'share') { startScreen(1, it.id); return; }
+  if (kind === 'camera' && sharing) return;
   act('device', { kind, id: it.id, label: it.label });
   if (kind !== 'camera') return;
   camPref = { id: it.id, label: it.label };
