@@ -183,5 +183,18 @@ body:not(.phase-connected) #full, body.is-video:not(.has-video):not(.has-tiles) 
 #menu .volHint { margin-top: 4px; color: var(--menu-muted); font-size: 12px; line-height: 16px; white-space: normal; }
 
 /* --- compact: a small tile with the picture, end call and expand --- */
-body.compact #pip, body.compact .notes, body.compact #menu, body.compact .tool, body.compact #camPill, body.compact #peerName { display: none !important; }
+body.compact #pip, body.compact .notes, body.compact .tool, body.compact #camPill, body.compact #peerName { display: none !important; }
 body.compact #bar .mid { gap: 12px; }
+body.compact #menu {
+  left: 6px !important;
+  width: calc(100% - 12px);
+  bottom: calc(var(--bar-h) + 6px);
+  max-height: calc(100% - var(--bar-h) - 12px);
+  font-size: 13px;
+  padding: 6px 0;
+}
+body.compact #menu .h, body.compact #menu .it { height: 26px; line-height: 26px; padding-left: 36px; }
+body.compact #menu .h img { left: 10px; top: 4px; width: 18px; height: 18px; }
+body.compact #menu .it img { left: 12px; top: 7px; width: 12px; height: 12px; }
+body.compact #menu .vol { padding: 4px 12px 6px 36px; }
+body.compact #menu .volHint { display: none; }

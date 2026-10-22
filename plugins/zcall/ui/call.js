@@ -820,7 +820,7 @@ async function chosenCamera() {
   return m ? m.id : null;
 }
 function closeMenu() {
-  menu.classList.remove('show'); menu.textContent = ''; menu.dataset.kind = '';
+  menu.classList.remove('show'); menu.textContent = ''; menu.dataset.kind = ''; menu.style.left = '';
   document.querySelectorAll('.caret.open').forEach((b) => b.classList.remove('open'));
 }
 // Sections: mic -> micro + loa (as Zalo's micro menu), camera -> camera, all (gear) -> the three.
