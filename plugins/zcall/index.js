@@ -146,6 +146,9 @@ function configure(app) {
 
 /** At 'ready', before Zalo can start a call. */
 function start({ userDataDir }) {
+  if (process.env.TMPDIR) {
+    try { fs.mkdirSync(process.env.TMPDIR, { recursive: true }); } catch (_) {}
+  }
   // Left over from an unclean exit (another running Zalo keeps its own).
   for (const p of engineProcesses()) if (isOrphan(p.ppid)) kill(p.pid, 'SIGKILL');
   callWindow.start();
